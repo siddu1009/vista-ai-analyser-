@@ -1,0 +1,8 @@
+{
+  "name": "VISTA: Vision Intelligence Scene Translator & Analyzer",
+  "description": "VISTA is a real-time monitoring and analysis application that uses your device's camera and microphone to understand and interpret your surroundings through AI-powered scene analysis, audio event detection, and voice narration.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
