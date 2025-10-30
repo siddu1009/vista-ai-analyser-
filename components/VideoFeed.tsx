@@ -1,4 +1,5 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+
+import React, { useRef, useEffect, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { AnalysisMode, LogType } from '../types';
 import CameraIcon from './icons/CameraIcon';
 import PlayIcon from './icons/PlayIcon';
@@ -15,8 +16,6 @@ const GESTURE_HOLD_DURATION = 1000; // ms
 
 interface VideoFeedProps {
   selectedCameraId: string | null;
-  onFrameCaptured: (base64Image: string) => void;
-  analysisInterval: number;
   isSystemActive: boolean;
   onStreamError: (message: string) => void;
   analysisMode: AnalysisMode;
@@ -25,22 +24,24 @@ interface VideoFeedProps {
   onSwitchAnalysisMode: () => void;
 }
 
-const VideoFeed: React.FC<VideoFeedProps> = ({ 
+export interface VideoFeedHandle {
+    captureFrame: () => Promise<string>;
+}
+
+const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({ 
     selectedCameraId, 
-    onFrameCaptured, 
-    analysisInterval, 
     isSystemActive, 
     onStreamError,
     analysisMode,
     onClientDetection,
     onToggleSystemActive,
     onSwitchAnalysisMode,
-}) => {
+}, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+  
   const streamRef = useRef<MediaStream | null>(null);
-  const geminiIntervalRef = useRef<number | null>(null);
   const animationFrameId = useRef<number | null>(null);
   const [models, setModels] = useState<{ object?: any; hand?: any }>({});
   const [modelsLoading, setModelsLoading] = useState(true);
@@ -57,6 +58,29 @@ const VideoFeed: React.FC<VideoFeedProps> = ({
   useEffect(() => {
     isSystemActiveRef.current = isSystemActive;
   }, [isSystemActive]);
+  
+  useImperativeHandle(ref, () => ({
+    captureFrame: () => {
+      return new Promise((resolve, reject) => {
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        if (video && canvas && video.readyState === 4) {
+          const context = canvas.getContext('2d');
+          if (context) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            context.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+            resolve(dataUrl);
+          } else {
+            reject("Could not get canvas context.");
+          }
+        } else {
+          reject("Video not ready or canvas not available.");
+        }
+      });
+    }
+  }));
 
   const classifyHandGesture = useCallback((landmarks: any[]) => {
       const isFist = () => {
@@ -81,9 +105,15 @@ const VideoFeed: React.FC<VideoFeedProps> = ({
     const loadModels = async () => {
       try {
         setModelsLoading(true);
+
+        // Explicitly set backend and wait for it to be ready for stability.
+        await tf.setBackend('webgl');
+        await tf.ready();
+
         const objectDetector = await cocoSsd.load();
         const handDetector = new Hands({locateFile: (file: string) => {
-          return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+          // Pin version to match the script tag in index.html for consistency.
+          return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`;
         }});
         handDetector.setOptions({
             maxNumHands: 2,
@@ -127,7 +157,7 @@ const VideoFeed: React.FC<VideoFeedProps> = ({
         onClientDetection(LogType.System, "Real-time analysis models loaded successfully.");
       } catch (error) {
         console.error("Failed to load models:", error);
-        onClientDetection(LogType.Error, "Could not load real-time analysis models.");
+        onClientDetection(LogType.Error, "Could not load models. This might be a network issue or a content blocker preventing access to model files.");
       } finally {
         setModelsLoading(false);
       }
@@ -170,39 +200,6 @@ const VideoFeed: React.FC<VideoFeedProps> = ({
     };
   }, [selectedCameraId, onStreamError]);
 
-  // Gemini frame capture interval
-  useEffect(() => {
-    if (geminiIntervalRef.current) {
-      clearInterval(geminiIntervalRef.current);
-      geminiIntervalRef.current = null;
-    }
-    
-    const isCloudAnalysisMode = analysisMode !== AnalysisMode.ObjectDetection && analysisMode !== AnalysisMode.HandGesture;
-
-    if (isSystemActive && isCloudAnalysisMode && videoRef.current && canvasRef.current) {
-      geminiIntervalRef.current = window.setInterval(() => {
-        const video = videoRef.current;
-        const canvas = canvasRef.current;
-        if (video && canvas && video.readyState === 4) {
-          const context = canvas.getContext('2d');
-          if (context) {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            context.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-            onFrameCaptured(dataUrl);
-          }
-        }
-      }, analysisInterval);
-    }
-
-    return () => {
-      if (geminiIntervalRef.current) {
-        clearInterval(geminiIntervalRef.current);
-      }
-    };
-  }, [isSystemActive, analysisInterval, onFrameCaptured, analysisMode]);
-
   // Real-time detection logging interval
   useEffect(() => {
     if (objectsLogIntervalRef.current) {
@@ -215,7 +212,7 @@ const VideoFeed: React.FC<VideoFeedProps> = ({
             const objects = detectedObjectsRef.current;
             if (Object.keys(objects).length > 0) {
                 const message = "Currently detecting: " + Object.entries(objects)
-                    .map(([name, count]) => `${count} ${name}${count > 1 ? 's' : ''}`)
+                    .map(([name, count]: [string, number]) => `${count} ${name}${count > 1 ? 's' : ''}`)
                     .join(', ');
                 onClientDetection(LogType.Analysis, message);
             }
@@ -235,7 +232,7 @@ const VideoFeed: React.FC<VideoFeedProps> = ({
       const count = (objectCounts[prediction.class] || 0) + 1;
       objectCounts[prediction.class] = count;
 
-      const [x, y, width, height] = prediction.bbox;
+      const [x, y, width, height]: [number, number, number, number] = prediction.bbox;
       const text = `${prediction.class} ${count} (${Math.round(prediction.score * 100)}%)`;
 
       const color = '#10B981'; // Emerald 500 from Tailwind
@@ -251,18 +248,15 @@ const VideoFeed: React.FC<VideoFeedProps> = ({
       const verticalPadding = 4;
       const labelHeight = textHeight + (verticalPadding * 2);
       
-      // Draw bounding box
       ctx.strokeStyle = color;
       ctx.lineWidth = boxLineWidth;
       ctx.strokeRect(x, y, width, height);
 
-      // Position label above the box. If it's outside the canvas, draw it inside.
       let labelYPosition = y - labelHeight;
       if (labelYPosition < 0) {
         labelYPosition = y;
       }
       
-      // Draw label background
       ctx.fillStyle = color;
       ctx.fillRect(
         x,
@@ -271,8 +265,6 @@ const VideoFeed: React.FC<VideoFeedProps> = ({
         labelHeight
       );
 
-      // Draw label text
-      // The y position for fillText is the baseline of the text.
       ctx.fillStyle = textColor;
       ctx.fillText(text, x + horizontalPadding, labelYPosition + textHeight + verticalPadding);
     });
@@ -281,92 +273,87 @@ const VideoFeed: React.FC<VideoFeedProps> = ({
   // Main detection loop
   useEffect(() => {
     const detectionLoop = async () => {
-      if (!videoRef.current || videoRef.current.readyState !== 4) {
-        animationFrameId.current = requestAnimationFrame(detectionLoop);
-        return;
-      }
-      
-      const video = videoRef.current;
-      const overlay = overlayCanvasRef.current;
-      if (!overlay) return;
-      const ctx = overlay.getContext('2d');
-      if (!ctx) return;
-      
-      overlay.width = video.videoWidth;
-      overlay.height = video.videoHeight;
-      ctx.clearRect(0, 0, overlay.width, overlay.height);
+        if (!videoRef.current || videoRef.current.readyState !== 4) {
+            animationFrameId.current = requestAnimationFrame(detectionLoop);
+            return;
+        }
+        
+        const video = videoRef.current;
+        const overlay = overlayCanvasRef.current;
+        if (!overlay) return;
+        const ctx = overlay.getContext('2d');
+        if (!ctx) return;
+        
+        overlay.width = video.videoWidth;
+        overlay.height = video.videoHeight;
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
 
-      // Always process hand gestures in this mode
-      if (analysisMode === AnalysisMode.HandGesture && models.hand) {
-          await models.hand.send({image: video});
-          const results = handResultsRef.current;
-          if (results && results.multiHandLandmarks) {
-            const gesture = classifyHandGesture(results.multiHandLandmarks[0]);
-            for (const landmarks of results.multiHandLandmarks) {
-                const gestureColor = gesture === 'Open Hand' ? '#22c55e'
-                                   : gesture === 'Closed Fist' ? '#facc15'
-                                   : '#00aaff';
-                
-                drawConnectors(ctx, landmarks, Hands.HAND_CONNECTIONS, {color: gestureColor, lineWidth: 5});
-                drawLandmarks(ctx, landmarks, {color: '#eeeeee', lineWidth: 2});
+        // Always process hand gestures in this mode
+        if (analysisMode === AnalysisMode.HandGesture && models.hand) {
+            await models.hand.send({image: video});
+            const results = handResultsRef.current;
+            if (results && results.multiHandLandmarks) {
+                const gesture = classifyHandGesture(results.multiHandLandmarks[0]);
+                for (const landmarks of results.multiHandLandmarks) {
+                    const gestureColor = gesture === 'Open Hand' ? '#22c55e' : gesture === 'Closed Fist' ? '#facc15' : '#00aaff';
+                    drawConnectors(ctx, landmarks, Hands.HAND_CONNECTIONS, {color: gestureColor, lineWidth: 5});
+                    drawLandmarks(ctx, landmarks, {color: '#eeeeee', lineWidth: 2});
 
-                if (gesture && landmarks === results.multiHandLandmarks[0]) {
-                    const wrist = landmarks[0];
-                    if (wrist) {
-                        ctx.fillStyle = gestureColor;
-                        ctx.font = 'bold 20px sans-serif';
-                        ctx.textAlign = 'left';
-                        ctx.fillText(gesture, wrist.x * overlay.width + 10, wrist.y * overlay.height - 20);
+                    if (gesture && landmarks === results.multiHandLandmarks[0]) {
+                        const wrist = landmarks[0];
+                        if (wrist) {
+                            ctx.fillStyle = gestureColor;
+                            ctx.font = 'bold 20px sans-serif';
+                            ctx.textAlign = 'left';
+                            ctx.fillText(gesture, wrist.x * overlay.width + 10, wrist.y * overlay.height - 20);
+                        }
                     }
                 }
             }
         }
-      }
 
-      // Process object detection only if active
-      if (isSystemActive && analysisMode === AnalysisMode.ObjectDetection && models.object) {
-          const predictions = await models.object.detect(video);
-          drawObjectDetections(predictions, ctx);
-          const currentObjects: {[key: string]: number} = {};
-          predictions.forEach((p: any) => {
-              currentObjects[p.class] = (currentObjects[p.class] || 0) + 1;
-          });
-          detectedObjectsRef.current = currentObjects;
-      }
+        // Process object detection only if active
+        if (isSystemActive && analysisMode === AnalysisMode.ObjectDetection && models.object) {
+            const predictions = await models.object.detect(video);
+            drawObjectDetections(predictions, ctx);
+            const currentObjects: {[key: string]: number} = {};
+            predictions.forEach((p: any) => {
+                currentObjects[p.class] = (currentObjects[p.class] || 0) + 1;
+            });
+            detectedObjectsRef.current = currentObjects;
+        }
 
-      // Draw visual feedback for triggered actions
-      if (visualFeedbackRef.current && visualFeedbackRef.current.expiry > Date.now()) {
-          ctx.fillStyle = 'rgba(0, 170, 255, 0.85)';
-          ctx.fillRect(0, overlay.height / 2 - 35, overlay.width, 70);
-          ctx.fillStyle = 'white';
-          ctx.font = 'bold 36px sans-serif';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(visualFeedbackRef.current.message, overlay.width / 2, overlay.height / 2);
-      } else if (visualFeedbackRef.current) {
-          visualFeedbackRef.current = null;
-      }
+        // Draw visual feedback for triggered actions
+        if (visualFeedbackRef.current && visualFeedbackRef.current.expiry > Date.now()) {
+            ctx.fillStyle = 'rgba(0, 170, 255, 0.85)';
+            ctx.fillRect(0, overlay.height / 2 - 35, overlay.width, 70);
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 36px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(visualFeedbackRef.current.message, overlay.width / 2, overlay.height / 2);
+        } else if (visualFeedbackRef.current) {
+            visualFeedbackRef.current = null;
+        }
 
-      animationFrameId.current = requestAnimationFrame(detectionLoop);
+        animationFrameId.current = requestAnimationFrame(detectionLoop);
     };
 
-    const shouldRunLoop = !modelsLoading && (analysisMode === AnalysisMode.HandGesture || (isSystemActive && analysisMode === AnalysisMode.ObjectDetection));
-    
-    if (shouldRunLoop) {
+    if (!modelsLoading) {
       animationFrameId.current = requestAnimationFrame(detectionLoop);
     } else {
-        if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
-        const overlay = overlayCanvasRef.current;
-        if (overlay) {
-            const ctx = overlay.getContext('2d');
-            if (ctx) ctx.clearRect(0, 0, overlay.width, overlay.height);
-        }
+      if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
+      const overlay = overlayCanvasRef.current;
+      if (overlay) {
+          const ctx = overlay.getContext('2d');
+          if (ctx) ctx.clearRect(0, 0, overlay.width, overlay.height);
+      }
     }
 
     return () => {
       if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
     };
-  }, [isSystemActive, analysisMode, models, modelsLoading, classifyHandGesture]);
+  }, [isSystemActive, analysisMode, models, modelsLoading, classifyHandGesture, onClientDetection]);
 
 
   return (
@@ -394,6 +381,6 @@ const VideoFeed: React.FC<VideoFeedProps> = ({
       </div>
     </div>
   );
-};
+});
 
 export default VideoFeed;

@@ -2,7 +2,6 @@ import React from 'react';
 import { AnalysisMode } from '../types';
 import CameraIcon from './icons/CameraIcon';
 import MicIcon from './icons/MicIcon';
-import ControlsIcon from './icons/ControlsIcon';
 
 interface ControlPanelProps {
   cameras: MediaDeviceInfo[];
@@ -13,8 +12,6 @@ interface ControlPanelProps {
   onMicChange: (deviceId: string) => void;
   analysisMode: AnalysisMode;
   onModeChange: (mode: AnalysisMode) => void;
-  analysisInterval: number;
-  onAnalysisIntervalChange: (value: number) => void;
   audioSensitivity: number;
   onAudioSensitivityChange: (value: number) => void;
   isNarrationEnabled: boolean;
@@ -30,8 +27,6 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
   onMicChange,
   analysisMode,
   onModeChange,
-  analysisInterval,
-  onAnalysisIntervalChange,
   audioSensitivity,
   onAudioSensitivityChange,
   isNarrationEnabled,
@@ -40,12 +35,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
   const analysisModes = Object.values(AnalysisMode);
 
   return (
-    <div className="w-full bg-vista-gray p-4 rounded-lg shadow-lg flex flex-col space-y-4">
-      <div className="flex items-center space-x-3 text-vista-accent border-b-2 border-vista-light-gray pb-2">
-        <ControlsIcon className="w-6 h-6" />
-        <h2 className="text-xl font-bold">Controls</h2>
-      </div>
-
+    <div className="w-full flex flex-col space-y-4">
       {/* Device Selection */}
       <div className="space-y-3">
         <h3 className="text-md font-semibold text-vista-text-muted">Devices</h3>
@@ -77,9 +67,9 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
 
       {/* Analysis Settings */}
       <div className="space-y-3">
-        <h3 className="text-md font-semibold text-vista-text-muted">Analysis Settings</h3>
+        <h3 className="text-md font-semibold text-vista-text-muted">VISTA Perception Mode</h3>
         <div>
-            <label htmlFor="analysis-mode" className="block mb-2 text-sm font-medium text-vista-text">Interpretation Mode</label>
+            <label htmlFor="analysis-mode" className="block mb-2 text-sm font-medium text-vista-text">On-Device Model</label>
             <select
                 id="analysis-mode"
                 value={analysisMode}
@@ -89,33 +79,17 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
                 {analysisModes.map(mode => <option key={mode} value={mode}>{mode}</option>)}
             </select>
         </div>
-        <div>
-            <label htmlFor="interval" className="flex justify-between mb-2 text-sm font-medium text-vista-text">
-                <span>Analysis Interval</span>
-                <span>{analysisInterval/1000}s</span>
-            </label>
-            <input
-            id="interval"
-            type="range"
-            min="2000"
-            max="10000"
-            step="1000"
-            value={analysisInterval}
-            onChange={(e) => onAnalysisIntervalChange(parseInt(e.target.value, 10))}
-            className="w-full h-2 bg-vista-light-gray rounded-lg appearance-none cursor-pointer"
-            />
-        </div>
       </div>
       
       {/* Audio Detector */}
       <div className="space-y-3">
         <h3 className="text-md font-semibold text-vista-text-muted">Audio Detector</h3>
-        <label htmlFor="sensitivity" className="flex justify-between mb-2 text-sm font-medium text-vista-text">
+        <label htmlFor="audio-sensitivity" className="flex justify-between mb-2 text-sm font-medium text-vista-text">
             <span>Sensitivity</span>
             <span>{audioSensitivity}</span>
         </label>
         <input
-          id="sensitivity"
+          id="audio-sensitivity"
           type="range"
           min="1"
           max="100"

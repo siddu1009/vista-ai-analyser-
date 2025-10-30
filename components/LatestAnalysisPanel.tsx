@@ -1,36 +1,34 @@
 import React from 'react';
-import { AnalysisMode } from '../types';
-import EyeIcon from './icons/EyeIcon';
+import ChatIcon from './icons/ChatIcon';
 
-interface LatestAnalysisPanelProps {
-    currentMode: AnalysisMode;
-    latestAnalysis: string | null;
-    isAnalyzing: boolean;
+interface LatestInsightPanelProps {
+    latestInsight: string | null;
+    isResponding: boolean;
 }
 
-const LatestAnalysisPanel: React.FC<LatestAnalysisPanelProps> = ({ currentMode, latestAnalysis, isAnalyzing }) => {
+const LatestInsightPanel: React.FC<LatestInsightPanelProps> = ({ latestInsight, isResponding }) => {
     return (
         <div className="w-full bg-vista-gray p-4 rounded-lg shadow-lg flex flex-col">
             <div className="flex items-center space-x-3 text-vista-accent border-b-2 border-vista-light-gray pb-2 mb-2">
-                <EyeIcon className="w-6 h-6" />
+                <ChatIcon className="w-6 h-6" />
                 <div>
-                    <h2 className="text-xl font-bold">Latest Analysis</h2>
-                    <p className="text-xs text-vista-text-muted">Current Mode: {currentMode}</p>
+                    <h2 className="text-xl font-bold">Jarvis's Latest Insight</h2>
+                    <p className="text-xs text-vista-text-muted">Synthesized from VISTA's Scene Log.</p>
                 </div>
             </div>
             <div className="flex-grow text-sm text-vista-text min-h-[60px]">
-                {isAnalyzing && (
+                {isResponding && (
                     <div className="flex items-center space-x-2 text-vista-text-muted">
                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-vista-accent"></div>
-                         <span>Analyzing scene...</span>
+                         <span>Jarvis is thinking...</span>
                     </div>
                 )}
-                {!isAnalyzing && (
-                    <p>{latestAnalysis || "Start the camera to begin analysis."}</p>
+                {!isResponding && (
+                    <p>{latestInsight || "Ask Jarvis a question to get started."}</p>
                 )}
             </div>
         </div>
     );
 };
 
-export default LatestAnalysisPanel;
+export default LatestInsightPanel;

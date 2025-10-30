@@ -14,7 +14,7 @@ const AudioEventDetectorPanel: React.FC<AudioEventDetectorPanelProps> = ({ isAud
                 <WaveformIcon className="w-6 h-6" />
                 <div>
                     <h2 className="text-xl font-bold">Audio Event Detector</h2>
-                    <p className="text-xs text-vista-text-muted">Detects sounds like speech, claps, and noise.</p>
+                    <p className="text-xs text-vista-text-muted">Detects changes in sound levels.</p>
                 </div>
             </div>
             <div className="flex-grow text-sm text-vista-text min-h-[60px]">
@@ -22,10 +22,14 @@ const AudioEventDetectorPanel: React.FC<AudioEventDetectorPanelProps> = ({ isAud
                      <span className={`w-3 h-3 rounded-full ${isAudioActive ? 'bg-green-500' : 'bg-red-500'}`}></span>
                      <span>{isAudioActive ? 'Audio is active and listening.' : 'Audio is off. Start system to detect events.'}</span>
                 </div>
-                {isAudioActive && latestAudioEvent && (
+                {isAudioActive && (
                     <div className="p-2 bg-vista-dark rounded">
-                        <p className="font-semibold">Last Event:</p>
-                        <p className="text-vista-text-muted">{latestAudioEvent.message}</p>
+                        {latestAudioEvent && (
+                            <>
+                                <p className="font-semibold">Last Event:</p>
+                                <p className="text-vista-text-muted">{latestAudioEvent.message}</p>
+                            </>
+                        )}
                     </div>
                 )}
             </div>
