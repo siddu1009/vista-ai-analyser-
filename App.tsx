@@ -6,8 +6,8 @@ import LatestInsightPanel from './components/LatestAnalysisPanel';
 import AudioEventDetectorPanel from './components/AudioEventDetectorPanel';
 import ChatPanel from './components/ChatPanel';
 import AccordionPanel from './components/AccordionPanel';
-import { AnalysisMode, LogEntry, LogType } from './types';
-import { askJarvis, completeJarvisTurn } from './services/geminiService';
+import { AnalysisMode, LogEntry, LogType, NarrationMode, InterruptionMode } from './types';
+import { askJarvis, completeJarvisTurn, getCloudVisionAnalysis, getJarvisInterruption } from './services/geminiService';
 import { Content, Part } from "@google/genai";
 import PlayIcon from './components/icons/PlayIcon';
 import PauseIcon from './components/icons/PauseIcon';
@@ -26,7 +26,8 @@ const App: React.FC = () => {
     const [analysisMode, setAnalysisMode] = useState<AnalysisMode>(AnalysisMode.ObjectDetection);
     const [log, setLog] = useState<LogEntry[]>([]);
     const [chatHistory, setChatHistory] = useState<Content[]>([]);
-    const [isNarrationEnabled, setIsNarrationEnabled] = useState<boolean>(false);
+    const [narrationMode, setNarrationMode] = useState<NarrationMode>(NarrationMode.AlertsOnly);
+    const [interruptionMode, setInterruptionMode] = useState<InterruptionMode>(InterruptionMode.Off);
     const [isSystemActive, setIsSystemActive] = useState<boolean>(false);
     const [isChatting, setIsChatting] = useState<boolean>(false);
     const [audioSensitivity, setAudioSensitivity] = useState(20);
@@ -37,10 +38,43 @@ const App: React.FC = () => {
     const analyserRef = useRef<AnalyserNode | null>(null);
     const audioStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
     const audioProcessorRef = useRef<number | null>(null);
+    const isCloudVisionRunningRef = useRef(false);
+    const cloudVisionIntervalRef = useRef<number | null>(null);
+    const interruptionIntervalRef = useRef<number | null>(null);
     
+    const narrate = useCallback((message: string, level: 'Alert' | 'Full') => {
+        if (narrationMode === NarrationMode.Off) return;
+
+        if (narrationMode === NarrationMode.Full) {
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(message);
+            window.speechSynthesis.speak(utterance);
+        } else if (narrationMode === NarrationMode.AlertsOnly && level === 'Alert') {
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(message);
+            window.speechSynthesis.speak(utterance);
+        }
+    }, [narrationMode]);
+
     const addLogEntry = useCallback((type: LogType, message: string, mode?: AnalysisMode) => {
         setLog(prevLog => [...prevLog, { id: Date.now(), timestamp: new Date(), type, message, mode }]);
-    }, []);
+
+        // Narrate based on log type
+        switch (type) {
+            case LogType.Error:
+            case LogType.System:
+                narrate(message, 'Alert');
+                break;
+            case LogType.Analysis:
+            case LogType.Audio:
+            case LogType.Gesture:
+            case LogType.Interruption:
+                narrate(message, 'Full');
+                break;
+            default:
+                break;
+        }
+    }, [narrate]);
 
     useEffect(() => {
         addLogEntry(LogType.System, "Jarvis is online. The VISTA sensory engine is ready to be activated.");
@@ -119,7 +153,7 @@ const App: React.FC = () => {
                 const modelResponse: Content = { role: 'model', parts: [{ text: result }] };
                 setChatHistory([...currentHistory, modelResponse]);
                 setLatestInsight(result);
-                if (isNarrationEnabled) new SpeechSynthesisUtterance(result);
+                narrate(result, 'Full');
             } else {
                 const functionCalls = result;
                 const modelTurn: Content = { role: 'model', parts: [...functionCalls] };
@@ -148,7 +182,7 @@ const App: React.FC = () => {
                 const finalModelResponse: Content = { role: 'model', parts: [{ text: finalResponseText }] };
                 setChatHistory([...historyWithToolResponse, finalModelResponse]);
                 setLatestInsight(finalResponseText);
-                 if (isNarrationEnabled) new SpeechSynthesisUtterance(finalResponseText);
+                 narrate(finalResponseText, 'Alert');
             }
 
         } catch (error) {
@@ -157,14 +191,76 @@ const App: React.FC = () => {
             const errorResponse: Content = { role: 'model', parts: [{ text: `Error: ${errorMessage}`}]};
             setChatHistory([...currentHistory, errorResponse]);
             setLatestInsight(`Error: ${errorMessage}`);
+            narrate(`Error: ${errorMessage}`, 'Alert');
         } finally {
             setIsChatting(false);
         }
-    }, [chatHistory, log, isNarrationEnabled, toggleSystemActive, handleSwitchAnalysisMode]);
+    }, [chatHistory, log, narrate, toggleSystemActive, handleSwitchAnalysisMode]);
 
     const handleClientDetection = useCallback((type: LogType, message: string) => {
         addLogEntry(type, message, analysisMode);
     }, [addLogEntry, analysisMode]);
+
+    // Effect for Cloud Vision Analysis
+    useEffect(() => {
+        const runCloudVision = async () => {
+            if (isCloudVisionRunningRef.current) return;
+            
+            try {
+                isCloudVisionRunningRef.current = true;
+                addLogEntry(LogType.System, "Capturing frame for cloud analysis...", AnalysisMode.CloudVision);
+
+                const frame = await videoFeedRef.current?.captureFrame();
+                if (frame) {
+                    const description = await getCloudVisionAnalysis(frame);
+                    addLogEntry(LogType.Analysis, description, AnalysisMode.CloudVision);
+                } else {
+                    addLogEntry(LogType.Error, "Failed to capture frame for analysis.", AnalysisMode.CloudVision);
+                }
+            } catch (error) {
+                console.error("Cloud vision analysis failed:", error);
+                addLogEntry(LogType.Error, "An error occurred during cloud analysis.", AnalysisMode.CloudVision);
+            } finally {
+                isCloudVisionRunningRef.current = false;
+            }
+        };
+
+        if (isSystemActive && analysisMode === AnalysisMode.CloudVision) {
+            runCloudVision(); 
+            cloudVisionIntervalRef.current = window.setInterval(runCloudVision, 10000);
+        }
+
+        return () => {
+            if (cloudVisionIntervalRef.current) {
+                clearInterval(cloudVisionIntervalRef.current);
+                cloudVisionIntervalRef.current = null;
+            }
+        };
+    }, [isSystemActive, analysisMode, addLogEntry]);
+
+    // Effect for Proactive Jarvis Interruptions
+    useEffect(() => {
+        const runInterruption = async () => {
+            if (isChatting || interruptionMode === InterruptionMode.Off) {
+                return;
+            }
+            const insight = await getJarvisInterruption(log, interruptionMode);
+            if (insight && !insight.includes('[NO_EVENT]')) {
+                addLogEntry(LogType.Interruption, insight);
+            }
+        };
+
+        if (isSystemActive && interruptionMode !== InterruptionMode.Off) {
+            interruptionIntervalRef.current = window.setInterval(runInterruption, 15000);
+        }
+
+        return () => {
+            if (interruptionIntervalRef.current) {
+                clearInterval(interruptionIntervalRef.current);
+                interruptionIntervalRef.current = null;
+            }
+        };
+    }, [isSystemActive, interruptionMode, log, addLogEntry, isChatting]);
     
     useEffect(() => {
         const cleanup = () => {
@@ -298,8 +394,10 @@ const App: React.FC = () => {
                             onModeChange={setAnalysisMode}
                             audioSensitivity={audioSensitivity}
                             onAudioSensitivityChange={setAudioSensitivity}
-                            isNarrationEnabled={isNarrationEnabled}
-                            onNarrationToggle={() => setIsNarrationEnabled(!isNarrationEnabled)}
+                            narrationMode={narrationMode}
+                            onNarrationModeChange={setNarrationMode}
+                            interruptionMode={interruptionMode}
+                            onInterruptionModeChange={setInterruptionMode}
                         />
                     </AccordionPanel>
                     <AccordionPanel title="Jarvis Console" icon={<ChatIcon className="w-6 h-6" />} defaultOpen={true}>

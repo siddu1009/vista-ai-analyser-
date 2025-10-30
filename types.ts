@@ -1,6 +1,7 @@
 export enum AnalysisMode {
   ObjectDetection = 'Object Detection',
   HandGesture = 'Hand Gesture',
+  CloudVision = 'Cloud Vision',
 }
 
 export enum LogType {
@@ -9,6 +10,19 @@ export enum LogType {
   System = 'System',
   Error = 'Error',
   Gesture = 'Gesture',
+  Interruption = 'Interruption',
+}
+
+export enum NarrationMode {
+  Off = 'Off',
+  AlertsOnly = 'Alerts Only',
+  Full = 'Full',
+}
+
+export enum InterruptionMode {
+  Off = 'Off',
+  Descriptive = 'Descriptive',
+  Analytic = 'Analytic',
 }
 
 export interface LogEntry {

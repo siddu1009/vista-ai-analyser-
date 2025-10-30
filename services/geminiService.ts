@@ -1,5 +1,5 @@
 import { GoogleGenAI, FunctionDeclaration, Content, Tool, Type, Part } from "@google/genai";
-import { LogEntry } from '../types';
+import { LogEntry, InterruptionMode } from '../types';
 
 if (!process.env.API_KEY) {
   throw new Error("API_KEY environment variable not set");
@@ -110,5 +110,66 @@ export const completeJarvisTurn = async (chatHistory: Content[]): Promise<string
     } catch (error) {
         console.error("Error completing Jarvis turn:", error);
         return "An error occurred completing the action.";
+    }
+};
+
+export const getJarvisInterruption = async (log: LogEntry[], mode: InterruptionMode): Promise<string> => {
+    const formattedLog = log
+        .slice(-15) // Use a shorter log slice for interruptions
+        .map(l => `${l.timestamp.toLocaleTimeString()} [${l.type.toUpperCase()}] ${l.message}`)
+        .join('\n');
+    
+    let userPrompt = '';
+    if (mode === InterruptionMode.Descriptive) {
+        userPrompt = "Briefly describe any significant new events in the last 15-20 seconds based on the scene log. Be very concise. If nothing significant happened, respond with only '[NO_EVENT]'.";
+    } else if (mode === InterruptionMode.Analytic) {
+        userPrompt = "Analyze the last 15-20 seconds of the scene log. Provide a concise, one-sentence insight about what is happening or has changed. If nothing significant occurred, respond with only '[NO_EVENT]'.";
+    } else {
+        return '';
+    }
+
+    const fullPrompt = `Here is the recent VISTA Scene Log:\n\n[SCENE_LOG]\n${formattedLog}\n\n[INSTRUCTION]\n${userPrompt}`;
+    const contents: Content[] = [{ role: 'user', parts: [{ text: fullPrompt }] }];
+
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents,
+            config: {
+                systemInstruction: JARVIS_SYSTEM_PROMPT,
+            },
+        });
+        return response.text;
+    } catch (error) {
+        console.error("Error getting Jarvis interruption:", error);
+        return "[NO_EVENT]";
+    }
+};
+
+
+export const getCloudVisionAnalysis = async (base64Image: string): Promise<string> => {
+    try {
+        const imagePart = {
+            inlineData: {
+                mimeType: 'image/jpeg',
+                data: base64Image,
+            },
+        };
+        const textPart = {
+            text: "Analyze this image from the VISTA system's camera. Provide a concise, one-sentence description of the scene."
+        };
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: { parts: [imagePart, textPart] },
+        });
+
+        return response.text;
+    } catch (error) {
+        console.error("Error getting cloud vision analysis:", error);
+        if (error instanceof Error) {
+            return `An error occurred during cloud vision analysis: ${error.message}`;
+        }
+        return "An unknown error occurred during cloud vision analysis.";
     }
 };

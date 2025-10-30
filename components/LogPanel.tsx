@@ -12,6 +12,7 @@ const getIconForLogType = (type: LogType) => {
     case LogType.System: return '⚙️';
     case LogType.Error: return '⚠️';
     case LogType.Gesture: return '👋';
+    case LogType.Interruption: return '🤖';
     default: return '➡️';
   }
 }
@@ -22,12 +23,14 @@ const getColorForLogType = (type: LogType, mode?: AnalysisMode) => {
             switch(mode) {
                 case AnalysisMode.ObjectDetection: return 'border-l-4 border-pink-400';
                 case AnalysisMode.HandGesture: return 'border-l-4 border-teal-400';
+                case AnalysisMode.CloudVision: return 'border-l-4 border-purple-400';
                 default: return 'border-l-4 border-gray-400';
             }
         case LogType.Audio: return 'border-l-4 border-orange-400';
         case LogType.Gesture: return 'border-l-4 border-teal-400';
         case LogType.System: return 'border-l-4 border-gray-500';
         case LogType.Error: return 'border-l-4 border-red-500';
+        case LogType.Interruption: return 'border-l-4 border-cyan-400';
         default: return 'border-l-4 border-vista-light-gray';
     }
 }

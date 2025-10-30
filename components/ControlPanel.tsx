@@ -1,5 +1,5 @@
 import React from 'react';
-import { AnalysisMode } from '../types';
+import { AnalysisMode, NarrationMode, InterruptionMode } from '../types';
 import CameraIcon from './icons/CameraIcon';
 import MicIcon from './icons/MicIcon';
 
@@ -14,8 +14,10 @@ interface ControlPanelProps {
   onModeChange: (mode: AnalysisMode) => void;
   audioSensitivity: number;
   onAudioSensitivityChange: (value: number) => void;
-  isNarrationEnabled: boolean;
-  onNarrationToggle: () => void;
+  narrationMode: NarrationMode;
+  onNarrationModeChange: (mode: NarrationMode) => void;
+  interruptionMode: InterruptionMode;
+  onInterruptionModeChange: (mode: InterruptionMode) => void;
 }
 
 const ControlPanel: React.FC<ControlPanelProps> = ({
@@ -29,10 +31,14 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
   onModeChange,
   audioSensitivity,
   onAudioSensitivityChange,
-  isNarrationEnabled,
-  onNarrationToggle
+  narrationMode,
+  onNarrationModeChange,
+  interruptionMode,
+  onInterruptionModeChange
 }) => {
   const analysisModes = Object.values(AnalysisMode);
+  const narrationModes = Object.values(NarrationMode);
+  const interruptionModes = Object.values(InterruptionMode);
 
   return (
     <div className="w-full flex flex-col space-y-4">
@@ -81,6 +87,22 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
         </div>
       </div>
       
+       {/* Jarvis Proactivity */}
+      <div className="space-y-3">
+        <h3 className="text-md font-semibold text-vista-text-muted">Jarvis Proactivity</h3>
+         <div>
+            <label htmlFor="interruption-mode" className="block mb-2 text-sm font-medium text-vista-text">Interruption Mode</label>
+            <select
+                id="interruption-mode"
+                value={interruptionMode}
+                onChange={(e) => onInterruptionModeChange(e.target.value as InterruptionMode)}
+                className="w-full bg-vista-light-gray border border-vista-dark text-vista-text text-sm rounded-lg focus:ring-vista-accent focus:border-vista-accent p-2.5"
+            >
+                {interruptionModes.map(mode => <option key={mode} value={mode}>{mode}</option>)}
+            </select>
+        </div>
+      </div>
+
       {/* Audio Detector */}
       <div className="space-y-3">
         <h3 className="text-md font-semibold text-vista-text-muted">Audio Detector</h3>
@@ -102,11 +124,17 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
       {/* Accessibility */}
       <div className="space-y-3">
         <h3 className="text-md font-semibold text-vista-text-muted">Accessibility</h3>
-        <label className="relative inline-flex items-center cursor-pointer">
-          <input type="checkbox" checked={isNarrationEnabled} onChange={onNarrationToggle} className="sr-only peer" />
-          <div className="w-11 h-6 bg-vista-light-gray peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-vista-accent"></div>
-          <span className="ml-3 text-sm font-medium text-vista-text">Enable Voice Narration</span>
-        </label>
+         <div>
+            <label htmlFor="narration-mode" className="block mb-2 text-sm font-medium text-vista-text">Voice Narration</label>
+            <select
+                id="narration-mode"
+                value={narrationMode}
+                onChange={(e) => onNarrationModeChange(e.target.value as NarrationMode)}
+                className="w-full bg-vista-light-gray border border-vista-dark text-vista-text text-sm rounded-lg focus:ring-vista-accent focus:border-vista-accent p-2.5"
+            >
+                {narrationModes.map(mode => <option key={mode} value={mode}>{mode}</option>)}
+            </select>
+        </div>
       </div>
     </div>
   );
