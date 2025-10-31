@@ -6,7 +6,7 @@ import LatestInsightPanel from './components/LatestAnalysisPanel';
 import AudioEventDetectorPanel from './components/AudioEventDetectorPanel';
 import ChatPanel from './components/ChatPanel';
 import AccordionPanel from './components/AccordionPanel';
-import { AnalysisMode, LogEntry, LogType, NarrationMode, InterruptionMode, VoiceActivationMode } from './types';
+import { AnalysisMode, LogEntry, LogType, NarrationMode, InterruptionMode, VoiceActivationMode, VoiceStatus } from './types';
 import { askJarvis, getCloudVisionAnalysis, getJarvisInterruption } from './services/geminiService';
 import { Content } from "@google/genai";
 import PlayIcon from './components/icons/PlayIcon';
@@ -17,7 +17,7 @@ import WaveformIcon from './components/icons/WaveformIcon';
 import ChatIcon from './components/icons/ChatIcon';
 import HistoryIcon from './components/icons/HistoryIcon';
 import TrashIcon from './components/icons/TrashIcon';
-import VoiceStatusIndicator, { VoiceStatus } from './components/VoiceStatusIndicator';
+import VoiceStatusIndicator from './components/VoiceStatusIndicator';
 
 // Mock smart home device registry
 const objectToEntityMap: { [key: string]: { entity_id: string; label: string; } } = {
@@ -42,6 +42,7 @@ const App: React.FC = () => {
     const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('off');
     const [isSystemActive, setIsSystemActive] = useState<boolean>(false);
     const [isChatting, setIsChatting] = useState<boolean>(false);
+    const [isAwake, setIsAwake] = useState(false); // For wake word state
     const [audioSensitivity, setAudioSensitivity] = useState(20);
     const [latestInsight, setLatestInsight] = useState<string | null>(null);
     const [detectedObjects, setDetectedObjects] = useState<string[]>([]);
@@ -68,6 +69,9 @@ const App: React.FC = () => {
     
     const voiceActivationModeRef = useRef(voiceActivationMode);
     useEffect(() => { voiceActivationModeRef.current = voiceActivationMode; }, [voiceActivationMode]);
+
+    const isAwakeRef = useRef(isAwake);
+    useEffect(() => { isAwakeRef.current = isAwake; }, [isAwake]);
     
     const narrate = useCallback((message: string, level: 'Alert' | 'Full') => {
         if (narrationMode === NarrationMode.Off) return;
@@ -161,7 +165,9 @@ const App: React.FC = () => {
 
     const buildVistaContext = useCallback(async () => {
         const frame = await videoFeedRef.current?.captureFrame();
-        const scene_description = frame ? await getCloudVisionAnalysis(frame) : "Could not capture scene.";
+        const visionAnalysis = frame 
+            ? await getCloudVisionAnalysis(frame) 
+            : { scene_description: "Could not capture scene.", visible_text: [] };
 
         const entities_in_view = detectedObjects
             .map(obj => objectToEntityMap[obj])
@@ -172,7 +178,11 @@ const App: React.FC = () => {
                 is_focused: index === 0, // Mark the first detected entity as "focused"
             }));
 
-        return { scene_description, entities_in_view };
+        return {
+            scene_description: visionAnalysis.scene_description,
+            visible_text: visionAnalysis.visible_text,
+            entities_in_view
+        };
     }, [detectedObjects, smartHomeState]);
     
     const handleAskJarvis = useCallback(async (message: string) => {
@@ -237,8 +247,13 @@ const App: React.FC = () => {
 
                 const frame = await videoFeedRef.current?.captureFrame();
                 if (frame) {
-                    const description = await getCloudVisionAnalysis(frame);
-                    addLogEntry(LogType.Analysis, description, AnalysisMode.CloudVision);
+                    const { scene_description, visible_text } = await getCloudVisionAnalysis(frame);
+                    let fullLogMessage = scene_description;
+                    if (visible_text && visible_text.length > 0) {
+                        const textEntries = visible_text.map(vt => `"${vt.text}" (on ${vt.location})`).join(', ');
+                        fullLogMessage += `\nDetected text: ${textEntries}`;
+                    }
+                    addLogEntry(LogType.Analysis, fullLogMessage, AnalysisMode.CloudVision);
                 } else {
                     addLogEntry(LogType.Error, "Failed to capture frame for analysis.", AnalysisMode.CloudVision);
                 }
@@ -293,306 +308,4 @@ const App: React.FC = () => {
         const cleanup = () => {
             if (audioProcessorRef.current) {
                 clearInterval(audioProcessorRef.current);
-                audioProcessorRef.current = null;
-            }
-            if(audioStreamSourceRef.current?.mediaStream){
-                audioStreamSourceRef.current.mediaStream.getTracks().forEach(track => track.stop());
-                audioStreamSourceRef.current = null;
-            }
-            if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-                audioContextRef.current.close().catch(console.error);
-                audioContextRef.current = null;
-            }
-        };
-
-        if (!isSystemActive || !selectedMicId) {
-            cleanup();
-            return;
-        }
-
-        const setupVolumeDetection = async () => {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: selectedMicId } } });
-                const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-                audioContextRef.current = audioContext;
-                const analyser = audioContext.createAnalyser();
-                analyser.fftSize = 256;
-                analyserRef.current = analyser;
-                const source = audioContext.createMediaStreamSource(stream);
-                audioStreamSourceRef.current = source;
-                source.connect(analyser);
-
-                const bufferLength = analyser.frequencyBinCount;
-                const dataArray = new Uint8Array(bufferLength);
-                let silenceCounter = 0;
-                let soundCounter = 0;
-
-                audioProcessorRef.current = window.setInterval(() => {
-                    analyser.getByteFrequencyData(dataArray);
-                    const average = dataArray.reduce((acc, val) => acc + val, 0) / bufferLength;
-                    
-                    const silenceThreshold = 5;
-                    const sustainedNoiseThreshold = (audioSensitivity / 100) * 50; 
-                    const impulseThreshold = (audioSensitivity / 100) * 100 + 30;
-
-                    if (average > impulseThreshold) {
-                         addLogEntry(LogType.Audio, `Sudden impulse sound detected (level: ${average.toFixed(2)}).`);
-                         silenceCounter = 0;
-                         soundCounter = 0;
-                    } else if (average > sustainedNoiseThreshold) {
-                         soundCounter++;
-                         silenceCounter = 0;
-                         if(soundCounter === 10) { // Approx 2 seconds
-                            addLogEntry(LogType.Audio, `Sustained background noise detected (level: ${average.toFixed(2)}).`);
-                         }
-                    } else if (average < silenceThreshold) {
-                        silenceCounter++;
-                        if(soundCounter > 10) {
-                            addLogEntry(LogType.Audio, "Sustained background noise ended.");
-                        }
-                        soundCounter = 0;
-                        if (silenceCounter === 25) { // Approx 5 seconds
-                            addLogEntry(LogType.Audio, "Period of silence detected.");
-                        }
-                    } else {
-                        if(silenceCounter > 25) {
-                             addLogEntry(LogType.Audio, "Silence ended.");
-                        }
-                        if(soundCounter > 10) {
-                            addLogEntry(LogType.Audio, "Sustained background noise ended.");
-                        }
-                        silenceCounter = 0;
-                        soundCounter = 0;
-                    }
-                }, 200);
-
-            } catch (err) {
-                console.error('Error setting up audio:', err);
-                addLogEntry(LogType.Error, "Could not access selected microphone.");
-            }
-        };
-        setupVolumeDetection();
-        
-        return cleanup;
-    }, [isSystemActive, selectedMicId, audioSensitivity, addLogEntry]);
-
-    // Effect for Voice Commands (Speech Recognition)
-    useEffect(() => {
-        const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-        if (!SpeechRecognition) {
-            if (voiceActivationMode === VoiceActivationMode.WakeWord) {
-                addLogEntry(LogType.Error, "Speech recognition is not supported by this browser.");
-            }
-            return;
-        }
-
-        // This ref helps manage restarts, especially after critical errors.
-        const shouldRestartRecognition = { current: true };
-
-        const cleanup = () => {
-            if (speechRecognitionRef.current) {
-                shouldRestartRecognition.current = false; // Prevent onend from restarting
-                speechRecognitionRef.current.onresult = null;
-                speechRecognitionRef.current.onend = null;
-                speechRecognitionRef.current.onerror = null;
-                speechRecognitionRef.current.onstart = null;
-                // It's important to call stop() to release the microphone resource
-                speechRecognitionRef.current.stop();
-                speechRecognitionRef.current = null;
-            }
-            setVoiceStatus('off');
-        };
-
-        if (isSystemActive && voiceActivationMode === VoiceActivationMode.WakeWord) {
-             if (speechRecognitionRef.current) return;
-            
-            const recognition = new SpeechRecognition();
-            recognition.continuous = true;
-            recognition.interimResults = false;
-            speechRecognitionRef.current = recognition;
-
-            recognition.onstart = () => {
-                setVoiceStatus('listening');
-            };
-            
-            recognition.onresult = (event: any) => {
-                const last = event.results.length - 1;
-                const transcript = event.results[last][0].transcript.trim().toLowerCase();
-                const wakeWord = 'jarvis';
-
-                if (transcript.startsWith(wakeWord)) {
-                    const command = transcript.substring(wakeWord.length).trim();
-                    if (command) {
-                        addLogEntry(LogType.System, `Voice command received: "${command}"`);
-                        handleAskJarvis(command);
-                    }
-                }
-            };
-
-            recognition.onend = () => {
-                if (
-                    shouldRestartRecognition.current &&
-                    isSystemActiveRef.current && 
-                    voiceActivationModeRef.current === VoiceActivationMode.WakeWord
-                ) {
-                    setTimeout(() => {
-                        try {
-                           if (speechRecognitionRef.current) {
-                               recognition.start(); 
-                           }
-                        } catch (e) {
-                           console.error("Speech recognition restart failed:", e)
-                           if (!(e instanceof DOMException && e.name === 'InvalidStateError')) {
-                               addLogEntry(LogType.Error, "Failed to restart speech recognition.");
-                           }
-                        }
-                    }, 250); // Add a small delay to prevent rapid failed restarts
-                } else {
-                    setVoiceStatus('ready');
-                }
-            };
-
-            recognition.onerror = (event: any) => {
-                let errorMessage = `Speech recognition error: ${event.error}`;
-                switch (event.error) {
-                    case 'no-speech':
-                        return; // This is common, don't log it as a critical error.
-                    case 'not-allowed':
-                    case 'service-not-allowed':
-                        errorMessage = "Microphone access denied. Voice commands disabled. Please enable permissions and re-activate.";
-                        shouldRestartRecognition.current = false;
-                        setVoiceActivationMode(VoiceActivationMode.Off);
-                        break;
-                    case 'network':
-                        errorMessage = "Network error during speech recognition. Will attempt to recover.";
-                        break;
-                    case 'audio-capture':
-                        errorMessage = "Could not capture audio. Please check your microphone.";
-                        shouldRestartRecognition.current = false;
-                        break;
-                }
-                console.error('Speech recognition error:', event.error, event);
-                addLogEntry(LogType.Error, errorMessage);
-            };
-            
-            try { 
-                recognition.start(); 
-            } catch (e) {
-                console.error("Could not start speech recognition:", e);
-                addLogEntry(LogType.Error, "Could not start speech recognition. Another process might be using the microphone.");
-            }
-        } else {
-            cleanup();
-            if (voiceActivationMode !== VoiceActivationMode.Off) {
-                setVoiceStatus('ready');
-            }
-        }
-
-        return cleanup;
-    }, [isSystemActive, voiceActivationMode, addLogEntry, handleAskJarvis, setVoiceActivationMode]);
-
-
-    const handleStreamError = useCallback((message: string) => {
-        addLogEntry(LogType.Error, message);
-        setIsSystemActive(false);
-    }, [addLogEntry]);
-
-    const latestAudioLog = [...log].reverse().find(l => l.type === LogType.Audio);
-    const derivedVoiceStatus: VoiceStatus = isChatting ? 'processing' : voiceStatus;
-
-    return (
-        <div className="min-h-screen bg-vista-dark flex flex-col p-4 gap-4 font-sans">
-            <header className="flex justify-between items-center text-vista-text pb-2 border-b-2 border-vista-light-gray flex-shrink-0">
-                <div className="flex items-center gap-4">
-                    <h1 className="text-3xl font-bold">VISTA <span className="text-vista-accent font-light hidden md:inline">| Vision Intelligence Scene Translator & Analyzer</span></h1>
-                    <VoiceStatusIndicator status={derivedVoiceStatus} />
-                </div>
-                 <button 
-                    onClick={() => toggleSystemActive()}
-                    className={`flex items-center space-x-2 px-6 py-3 rounded-lg font-semibold text-lg transition-all duration-300 ${isSystemActive ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} text-white shadow-lg`}
-                >
-                    {isSystemActive ? <PauseIcon className="w-6 h-6" /> : <PlayIcon className="w-6 h-6" />}
-                    <span>{isSystemActive ? 'PAUSE' : 'START'}</span>
-                </button>
-            </header>
-            <main className="flex-grow grid grid-cols-1 lg:grid-cols-3 gap-4 overflow-hidden">
-                <div className="lg:col-span-2 min-h-0">
-                     <VideoFeed
-                        ref={videoFeedRef}
-                        selectedCameraId={selectedCameraId}
-                        isSystemActive={isSystemActive}
-                        onStreamError={handleStreamError}
-                        analysisMode={analysisMode}
-                        onClientDetection={(type, msg) => addLogEntry(type, msg, analysisMode)}
-                        onToggleSystemActive={toggleSystemActive}
-                        onSwitchAnalysisMode={handleSwitchAnalysisMode}
-                        onObjectsDetected={setDetectedObjects}
-                    />
-                </div>
-                <div className="lg:col-span-1 flex flex-col gap-4 overflow-y-auto min-h-0 pr-2">
-                    <AccordionPanel title="Controls" icon={<ControlsIcon className="w-6 h-6" />} defaultOpen={true}>
-                        <ControlPanel
-                            cameras={cameras}
-                            microphones={microphones}
-                            selectedCameraId={selectedCameraId}
-                            selectedMicId={selectedMicId}
-                            onCameraChange={setSelectedCameraId}
-                            onMicChange={setSelectedMicId}
-                            analysisMode={analysisMode}
-                            onModeChange={setAnalysisMode}
-                            audioSensitivity={audioSensitivity}
-                            onAudioSensitivityChange={setAudioSensitivity}
-                            narrationMode={narrationMode}
-                            onNarrationModeChange={setNarrationMode}
-                            interruptionMode={interruptionMode}
-                            onInterruptionModeChange={setInterruptionMode}
-                            voiceActivationMode={voiceActivationMode}
-                            onVoiceActivationModeChange={setVoiceActivationMode}
-                        />
-                    </AccordionPanel>
-                    <AccordionPanel title="Jarvis Console" icon={<ChatIcon className="w-6 h-6" />} defaultOpen={true}>
-                        <ChatPanel 
-                            onSendMessage={handleAskJarvis} 
-                            isSending={isChatting}
-                            history={chatHistory}
-                            analysisMode={analysisMode}
-                        />
-                    </AccordionPanel>
-                     <AccordionPanel title="Jarvis's Response" icon={<EyeIcon className="w-6 h-6" />}>
-                        <LatestInsightPanel 
-                            latestInsight={latestInsight}
-                            isResponding={isChatting}
-                        />
-                    </AccordionPanel>
-                     <AccordionPanel title="Audio Events" icon={<WaveformIcon className="w-6 h-6" />}>
-                        <AudioEventDetectorPanel
-                            isAudioActive={isSystemActive && !!selectedMicId}
-                            latestAudioEvent={latestAudioLog}
-                        />
-                    </AccordionPanel>
-                    <AccordionPanel title="VISTA Scene Log" icon={<HistoryIcon className="w-6 h-6" />}>
-                        <div className="flex justify-between items-center mb-2">
-                             <p className="text-xs text-vista-text-muted">A real-time log from the VISTA sensory engine.</p>
-                            <button 
-                                onClick={() => {
-                                    setLog([]);
-                                    addLogEntry(LogType.System, "Log cleared.");
-                                }} 
-                                className="p-2 text-vista-text-muted hover:text-white transition-colors" 
-                                aria-label="Clear Log"
-                            >
-                                <TrashIcon className="w-5 h-5"/>
-                            </button>
-                        </div>
-                        <LogPanel 
-                            logs={log}
-                        />
-                    </AccordionPanel>
-                </div>
-            </main>
-        </div>
-    );
-}
-
-export default App;
+                audioProcessor

@@ -1,7 +1,6 @@
 import React from 'react';
 import MicIcon from './icons/MicIcon';
-
-export type VoiceStatus = 'off' | 'ready' | 'listening' | 'processing';
+import { VoiceStatus } from '../types';
 
 interface VoiceStatusIndicatorProps {
     status: VoiceStatus;
@@ -22,7 +21,12 @@ const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({ status }) =
             case 'listening':
                 return {
                     text: "Say 'Jarvis'...",
-                    iconClass: "text-vista-accent animate-pulse"
+                    iconClass: "text-vista-accent"
+                };
+             case 'waiting_command':
+                return {
+                    text: "Listening...",
+                    iconClass: "text-green-400 animate-pulse"
                 };
             case 'processing':
                 return {

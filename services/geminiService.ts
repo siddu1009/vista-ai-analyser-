@@ -1,4 +1,4 @@
-import { GoogleGenAI, Content, Type, Part } from "@google/genai";
+import { GoogleGenAI, Content, Type, Part, FunctionDeclaration } from "@google/genai";
 import { LogEntry, InterruptionMode } from '../types';
 
 if (!process.env.API_KEY) {
@@ -8,128 +8,25 @@ if (!process.env.API_KEY) {
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 const JARVIS_SYSTEM_PROMPT = `
-You are Jarvis, a helpful and autonomous AI assistant. Your primary goal is to help the user by answering their questions or controlling their smart home devices.
+You are Jarvis, an advanced AI assistant inspired by the one from Iron Man. You are sophisticated, witty, concise, and incredibly helpful. Your primary role is to assist the user by interpreting their voice commands in the context of their visual environment, provided by the VISTA system.
 
-You will receive TWO pieces of information on every turn:
-1.  \`USER_PROMPT\`: The user's transcribed voice command.
-2.  \`VISTA_CONTEXT\`: A JSON object from the vision system ("Vista") detailing what the user is currently looking at.
+On every turn, you will receive a user's prompt and the visual context, which includes a scene description, any text visible in the scene (\`visible_text\`), and a list of smart devices. Your task is to decide which function to call: \`answer_user\` for spoken responses or \`call_home_assistant\` for device control.
 
-Based on the user's prompt and the visual context, you must decide which tool to use. Your ONLY output MUST be a single, valid JSON object that adheres to the provided schema, specifying ONE of the available tools.
-
----
-[EXAMPLES]
-
-**Example 1: Answering a question about the scene**
-
-[VISTA_CONTEXT]
-{
-  "scene_description": "A living room with a couch and a potted plant in the corner.",
-  "entities_in_view": [
-    {
-      "entity_id": "light.living_room_lamp",
-      "label": "Floor Lamp",
-      "state": "off",
-      "is_focused": true
-    }
-  ]
-}
-
-[USER_PROMPT]
-"What do you see?"
-
-[YOUR_RESPONSE]
-{
-  "answer_user": {
-    "spoken_response": "I see a living room with a couch and what appears to be a floor lamp."
-  }
-}
-
----
-
-**Example 2: Controlling a focused smart device**
-
-[VISTA_CONTEXT]
-{
-  "scene_description": "A living room with a large TV and a floor lamp.",
-  "entities_in_view": [
-    {
-      "entity_id": "light.living_room_lamp",
-      "label": "Floor Lamp",
-      "state": "off",
-      "is_focused": true
-    },
-    {
-      "entity_id": "media_player.living_room_tv",
-      "label": "TV",
-      "state": "standby",
-      "is_focused": false
-    }
-  ]
-}
-
-[USER_PROMPT]
-"Turn on that light."
-
-[YOUR_RESPONSE]
-{
-  "call_home_assistant": {
-    "entity_id": "light.living_room_lamp",
-    "service": "turn_on",
-    "confirmation_message": "Of course. Turning on the Floor Lamp."
-  }
-}
-
----
-
-**Example 3: Handling an ambiguous command**
-
-[VISTA_CONTEXT]
-{
-  "scene_description": "A living room with a TV and a lamp.",
-  "entities_in_view": [
-    {
-      "entity_id": "media_player.living_room_tv",
-      "label": "TV",
-      "state": "standby",
-      "is_focused": true
-    },
-    {
-      "entity_id": "light.living_room_lamp",
-      "label": "Floor Lamp",
-      "state": "off",
-      "is_focused": false
-    }
-  ]
-}
-
-[USER_PROMPT]
-"Turn it on."
-
-[YOUR_RESPONSE]
-{
-  "answer_user": {
-    "spoken_response": "Certainly. Are you referring to the TV or the Floor Lamp?"
-  }
-}
----
-
-TOOL DESCRIPTIONS:
-1.  \`answer_user\`: Use this tool to provide a spoken answer to the user's question. This is for general knowledge questions, observations about the scene, or any query that doesn't involve controlling a device.
-2.  \`call_home_assistant\`: Use this tool to control a smart home device identified in \`VISTA_CONTEXT\`. You must identify the correct \`entity_id\` from the context. Use contextual clues from the user's prompt (e.g., "that light", "the TV") and the \`is_focused\` flag to determine the target device. You must also determine the correct \`service\` to call (e.g., 'turn_on', 'turn_off').
-
-RULES:
-- If the user's command is ambiguous, ask a clarifying question using the \`answer_user\` tool.
-- Do not invent devices. Only use \`entity_id\`s provided in the \`VISTA_CONTEXT\`.
-- Be conversational but concise in your spoken responses and confirmation messages.
-- Always respond with a single JSON object containing the key for the single tool you have chosen.
+CORE DIRECTIVES:
+1.  **Prioritize Focus:** The \`is_focused\` flag in the \`VISTA_CONTEXT\` is your primary clue. It indicates what the user is most likely looking at. Use it to resolve ambiguity (e.g., if the user says "turn that on" and a lamp is focused, control that lamp).
+2.  **Utilize All Visual Cues:** Leverage the \`scene_description\` for general understanding and the \`visible_text\` array to answer questions about text in the environment (e.g., "What does that sign say?").
+3.  **Handle Ambiguity Gracefully:** If a command is genuinely ambiguous and the focus flag doesn't help (e.g., two lights are visible, neither is focused, and the user says "turn on the light"), you MUST ask a clarifying question using the \`answer_user\` function. Be specific, like "Of course. Which light are you referring to?".
+4.  **Act with Confidence:** Be decisive. Your confirmation messages for actions should be brief and affirmative (e.g., "Done." or "The living room TV is now on.").
+5.  **Stay Grounded in Reality:** Never invent devices or guess an \`entity_id\`. If the user refers to something you cannot see in the context, politely inform them, e.g., "I'm sorry, I don't see a fan in the current view."
+6.  **Be Jarvis:** Maintain a helpful, professional, and slightly witty persona in all spoken responses. Brevity is key.
 `;
 
-const toolSchema = {
-  type: Type.OBJECT,
-  properties: {
-    answer_user: {
+const tools: FunctionDeclaration[] = [
+  {
+    name: 'answer_user',
+    description: "Use this to give a spoken answer to the user.",
+    parameters: {
       type: Type.OBJECT,
-      description: "Use this to give a spoken answer to the user.",
       properties: {
         spoken_response: {
           type: Type.STRING,
@@ -137,10 +34,13 @@ const toolSchema = {
         }
       },
       required: ["spoken_response"]
-    },
-    call_home_assistant: {
+    }
+  },
+  {
+    name: 'call_home_assistant',
+    description: "Use this to control smart devices.",
+    parameters: {
       type: Type.OBJECT,
-      description: "Use this to control smart devices.",
       properties: {
         entity_id: {
           type: Type.STRING,
@@ -157,9 +57,8 @@ const toolSchema = {
       },
       required: ["entity_id", "service", "confirmation_message"]
     }
-  },
-};
-
+  }
+];
 
 export const askJarvis = async (
     userPrompt: string,
@@ -176,17 +75,31 @@ ${userPrompt}
 
     try {
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-2.5-pro',
             contents,
             config: {
                 systemInstruction: JARVIS_SYSTEM_PROMPT,
-                responseMimeType: "application/json",
-                responseSchema: toolSchema,
+                tools: [{ functionDeclarations: tools }],
+                thinkingConfig: { thinkingBudget: 8192 },
             },
         });
 
-        // The response text should be a JSON string.
-        return JSON.parse(response.text);
+        const functionCalls = response.functionCalls;
+        if (functionCalls && functionCalls.length > 0) {
+            const call = functionCalls[0];
+            // Re-structure the output to match what App.tsx expects: { tool_name: { ...args } }
+            return { [call.name]: call.args };
+        } else {
+            // If the model doesn't call a function, it might just return text.
+            // Let's wrap it in the answer_user format as a fallback.
+            const textResponse = response.text?.trim();
+            if (textResponse) {
+                return { answer_user: { spoken_response: textResponse } };
+            }
+            // If there's no function call and no text, something went wrong.
+            throw new Error("Jarvis did not respond with a function call or text.");
+        }
+
     } catch (error) {
         console.error("Error asking Jarvis:", error);
         let message = "An unknown error occurred while communicating with Jarvis.";
@@ -220,10 +133,10 @@ ${instruction}
 
     try {
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-2.5-pro',
             contents,
             config: {
-                systemInstruction: "You are Jarvis, an AI assistant. Your goal is to provide brief, useful observations about the user's surroundings based on visual context. Be concise.",
+                systemInstruction: "You are Jarvis, an AI assistant. Your goal is to provide brief, insightful, and proactive observations about the user's surroundings based on visual context. Be concise and helpful, but not intrusive.",
             },
         });
         return response.text;
@@ -234,7 +147,7 @@ ${instruction}
 };
 
 
-export const getCloudVisionAnalysis = async (base64Image: string): Promise<string> => {
+export const getCloudVisionAnalysis = async (base64Image: string): Promise<{ scene_description: string; visible_text: { text: string; location: string }[] }> => {
     try {
         const imagePart = {
             inlineData: {
@@ -243,20 +156,65 @@ export const getCloudVisionAnalysis = async (base64Image: string): Promise<strin
             },
         };
         const textPart = {
-            text: "Analyze this image from the VISTA system's camera. Provide a concise, one-sentence description of the scene."
+            text: "Analyze this image from the VISTA system's camera. Provide a concise, one-sentence description of the scene and extract any visible text. For each piece of text, describe its location (e.g., 'on a book cover')."
         };
 
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: { parts: [imagePart, textPart] },
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        scene_description: {
+                            type: Type.STRING,
+                            description: "A concise, one-sentence description of the overall scene."
+                        },
+                        visible_text: {
+                            type: Type.ARRAY,
+                            description: "A list of any text found in the image.",
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    text: {
+                                        type: Type.STRING,
+                                        description: "The extracted text content."
+                                    },
+                                    location: {
+                                        type: Type.STRING,
+                                        description: "A brief description of where the text is located (e.g., 'on the book cover', 'on the laptop screen')."
+                                    }
+                                },
+                                required: ["text", "location"]
+                            }
+                        }
+                    },
+                    required: ["scene_description"]
+                }
+            }
         });
 
-        return response.text;
+        const jsonString = response.text.trim();
+        // A basic check to see if it's valid JSON
+        if (jsonString.startsWith('{') && jsonString.endsWith('}')) {
+             const parsed = JSON.parse(jsonString);
+             // Ensure visible_text is always an array
+             if (!parsed.visible_text) {
+                 parsed.visible_text = [];
+             }
+             return parsed;
+        }
+        // Fallback if the model fails to return perfect JSON
+        console.warn("Gemini did not return valid JSON for cloud vision analysis. Response:", jsonString);
+        return { scene_description: jsonString, visible_text: [] };
+
     } catch (error) {
         console.error("Error getting cloud vision analysis:", error);
+        let message = "An unknown error occurred during cloud vision analysis.";
         if (error instanceof Error) {
-            return `An error occurred during cloud vision analysis: ${error.message}`;
+            message = `An error occurred during cloud vision analysis: ${error.message}`;
         }
-        return "An unknown error occurred during cloud vision analysis.";
+        return { scene_description: message, visible_text: [] };
     }
 };
