@@ -61,6 +61,13 @@ const App: React.FC = () => {
     const cloudVisionIntervalRef = useRef<number | null>(null);
     const interruptionIntervalRef = useRef<number | null>(null);
     const speechRecognitionRef = useRef<any>(null);
+
+    // Refs to hold latest state for callbacks to prevent stale closures
+    const isSystemActiveRef = useRef(isSystemActive);
+    useEffect(() => { isSystemActiveRef.current = isSystemActive; }, [isSystemActive]);
+    
+    const voiceActivationModeRef = useRef(voiceActivationMode);
+    useEffect(() => { voiceActivationModeRef.current = voiceActivationMode; }, [voiceActivationMode]);
     
     const narrate = useCallback((message: string, level: 'Alert' | 'Full') => {
         if (narrationMode === NarrationMode.Off) return;
@@ -416,8 +423,15 @@ const App: React.FC = () => {
                 };
 
                 recognition.onend = () => {
-                    if (isSystemActive && voiceActivationMode === VoiceActivationMode.WakeWord) {
-                        try { recognition.start(); } catch (e) { /* Already started */ }
+                    // Use refs to get the latest state and avoid stale closures.
+                    if (isSystemActiveRef.current && voiceActivationModeRef.current === VoiceActivationMode.WakeWord) {
+                        try {
+                           // The recognition instance might have been cleaned up.
+                           // The `recognition` variable is from the closure, which is correct here.
+                           recognition.start(); 
+                        } catch (e) {
+                           console.error("Speech recognition restart failed:", e)
+                        }
                     } else {
                         setVoiceStatus('ready');
                     }
