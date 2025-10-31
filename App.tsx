@@ -387,12 +387,17 @@ const App: React.FC = () => {
             return;
         }
 
+        // This ref helps manage restarts, especially after critical errors.
+        const shouldRestartRecognition = { current: true };
+
         const cleanup = () => {
             if (speechRecognitionRef.current) {
+                shouldRestartRecognition.current = false; // Prevent onend from restarting
                 speechRecognitionRef.current.onresult = null;
                 speechRecognitionRef.current.onend = null;
                 speechRecognitionRef.current.onerror = null;
                 speechRecognitionRef.current.onstart = null;
+                // It's important to call stop() to release the microphone resource
                 speechRecognitionRef.current.stop();
                 speechRecognitionRef.current = null;
             }
@@ -400,54 +405,82 @@ const App: React.FC = () => {
         };
 
         if (isSystemActive && voiceActivationMode === VoiceActivationMode.WakeWord) {
-            if (!speechRecognitionRef.current) {
-                const recognition = new SpeechRecognition();
-                recognition.continuous = true;
-                recognition.interimResults = false;
-                speechRecognitionRef.current = recognition;
+             if (speechRecognitionRef.current) return;
+            
+            const recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = false;
+            speechRecognitionRef.current = recognition;
 
-                recognition.onstart = () => setVoiceStatus('listening');
-                
-                recognition.onresult = (event: any) => {
-                    const last = event.results.length - 1;
-                    const transcript = event.results[last][0].transcript.trim().toLowerCase();
-                    const wakeWord = 'jarvis';
+            recognition.onstart = () => {
+                setVoiceStatus('listening');
+            };
+            
+            recognition.onresult = (event: any) => {
+                const last = event.results.length - 1;
+                const transcript = event.results[last][0].transcript.trim().toLowerCase();
+                const wakeWord = 'jarvis';
 
-                    if (transcript.startsWith(wakeWord)) {
-                        const command = transcript.substring(wakeWord.length).trim();
-                        if (command) {
-                            addLogEntry(LogType.System, `Voice command received: "${command}"`);
-                            handleAskJarvis(command);
-                        }
+                if (transcript.startsWith(wakeWord)) {
+                    const command = transcript.substring(wakeWord.length).trim();
+                    if (command) {
+                        addLogEntry(LogType.System, `Voice command received: "${command}"`);
+                        handleAskJarvis(command);
                     }
-                };
+                }
+            };
 
-                recognition.onend = () => {
-                    // Use refs to get the latest state and avoid stale closures.
-                    if (isSystemActiveRef.current && voiceActivationModeRef.current === VoiceActivationMode.WakeWord) {
+            recognition.onend = () => {
+                if (
+                    shouldRestartRecognition.current &&
+                    isSystemActiveRef.current && 
+                    voiceActivationModeRef.current === VoiceActivationMode.WakeWord
+                ) {
+                    setTimeout(() => {
                         try {
-                           // The recognition instance might have been cleaned up.
-                           // The `recognition` variable is from the closure, which is correct here.
-                           recognition.start(); 
+                           if (speechRecognitionRef.current) {
+                               recognition.start(); 
+                           }
                         } catch (e) {
                            console.error("Speech recognition restart failed:", e)
+                           if (!(e instanceof DOMException && e.name === 'InvalidStateError')) {
+                               addLogEntry(LogType.Error, "Failed to restart speech recognition.");
+                           }
                         }
-                    } else {
-                        setVoiceStatus('ready');
-                    }
-                };
-
-                recognition.onerror = (event: any) => {
-                    if (event.error !== 'no-speech') {
-                         console.error('Speech recognition error:', event.error);
-                         addLogEntry(LogType.Error, `Speech recognition error: ${event.error}`);
-                    }
-                };
-                
-                try { recognition.start(); } catch (e) {
-                    console.error("Could not start speech recognition:", e);
-                    addLogEntry(LogType.Error, "Could not start speech recognition.");
+                    }, 250); // Add a small delay to prevent rapid failed restarts
+                } else {
+                    setVoiceStatus('ready');
                 }
+            };
+
+            recognition.onerror = (event: any) => {
+                let errorMessage = `Speech recognition error: ${event.error}`;
+                switch (event.error) {
+                    case 'no-speech':
+                        return; // This is common, don't log it as a critical error.
+                    case 'not-allowed':
+                    case 'service-not-allowed':
+                        errorMessage = "Microphone access denied. Voice commands disabled. Please enable permissions and re-activate.";
+                        shouldRestartRecognition.current = false;
+                        setVoiceActivationMode(VoiceActivationMode.Off);
+                        break;
+                    case 'network':
+                        errorMessage = "Network error during speech recognition. Will attempt to recover.";
+                        break;
+                    case 'audio-capture':
+                        errorMessage = "Could not capture audio. Please check your microphone.";
+                        shouldRestartRecognition.current = false;
+                        break;
+                }
+                console.error('Speech recognition error:', event.error, event);
+                addLogEntry(LogType.Error, errorMessage);
+            };
+            
+            try { 
+                recognition.start(); 
+            } catch (e) {
+                console.error("Could not start speech recognition:", e);
+                addLogEntry(LogType.Error, "Could not start speech recognition. Another process might be using the microphone.");
             }
         } else {
             cleanup();
@@ -457,7 +490,7 @@ const App: React.FC = () => {
         }
 
         return cleanup;
-    }, [isSystemActive, voiceActivationMode, addLogEntry, handleAskJarvis]);
+    }, [isSystemActive, voiceActivationMode, addLogEntry, handleAskJarvis, setVoiceActivationMode]);
 
 
     const handleStreamError = useCallback((message: string) => {
