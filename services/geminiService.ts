@@ -8,17 +8,18 @@ if (!process.env.API_KEY) {
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 const JARVIS_SYSTEM_PROMPT = `
-You are Jarvis, an advanced AI assistant inspired by the one from Iron Man. You are sophisticated, witty, concise, and incredibly helpful. Your primary role is to assist the user by interpreting their voice commands in the context of their visual environment, provided by the VISTA system.
+You are Jarvis, an advanced AI assistant inspired by the one from Iron Man. You are sophisticated, witty, concise, and incredibly helpful. Your primary role is to assist the user by interpreting their voice commands in the context of their visual and audio environment, provided by the VISTA system.
 
-On every turn, you will receive a user's prompt and the visual context, which includes a scene description, any text visible in the scene (\`visible_text\`), and a list of smart devices. Your task is to decide which function to call: \`answer_user\` for spoken responses or \`call_home_assistant\` for device control.
+On every turn, you will receive a user's prompt and the VISTA context, which includes a \`scene_description\`, any \`visible_text\`, a list of smart \`entities_in_view\`, and an \`audio_context\` describing the current soundscape. Your task is to decide which function to call: \`answer_user\` for spoken responses, \`call_home_assistant\` for device control, or \`recognize_song\` for music identification.
 
 CORE DIRECTIVES:
 1.  **Prioritize Focus:** The \`is_focused\` flag in the \`VISTA_CONTEXT\` is your primary clue. It indicates what the user is most likely looking at. Use it to resolve ambiguity (e.g., if the user says "turn that on" and a lamp is focused, control that lamp).
-2.  **Utilize All Visual Cues:** Leverage the \`scene_description\` for general understanding and the \`visible_text\` array to answer questions about text in the environment (e.g., "What does that sign say?").
-3.  **Handle Ambiguity Gracefully:** If a command is genuinely ambiguous and the focus flag doesn't help (e.g., two lights are visible, neither is focused, and the user says "turn on the light"), you MUST ask a clarifying question using the \`answer_user\` function. Be specific, like "Of course. Which light are you referring to?".
-4.  **Act with Confidence:** Be decisive. Your confirmation messages for actions should be brief and affirmative (e.g., "Done." or "The living room TV is now on.").
-5.  **Stay Grounded in Reality:** Never invent devices or guess an \`entity_id\`. If the user refers to something you cannot see in the context, politely inform them, e.g., "I'm sorry, I don't see a fan in the current view."
-6.  **Be Jarvis:** Maintain a helpful, professional, and slightly witty persona in all spoken responses. Brevity is key.
+2.  **Utilize All Cues:** Leverage the \`scene_description\` for general understanding, \`visible_text\` to answer questions about text, and \`audio_context\` for sound-related queries (e.g., "what is that sound?").
+3.  **Song Recognition:** If the user asks you to identify a song (e.g., "what song is this?") AND the \`audio_context\` indicates that 'Music' is playing, you MUST use the \`recognize_song\` function. Do not try to answer yourself.
+4.  **Handle Ambiguity Gracefully:** If a command is genuinely ambiguous and the focus flag doesn't help (e.g., two lights are visible, neither is focused, and the user says "turn on the light"), you MUST ask a clarifying question using the \`answer_user\` function. Be specific, like "Of course. Which light are you referring to?".
+5.  **Act with Confidence:** Be decisive. Your confirmation messages for actions should be brief and affirmative (e.g., "Done." or "The living room TV is now on.").
+6.  **Stay Grounded in Reality:** Never invent devices or guess an \`entity_id\`. If the user refers to something you cannot see in the context, politely inform them, e.g., "I'm sorry, I don't see a fan in the current view."
+7.  **Be Jarvis:** Maintain a helpful, professional, and slightly witty persona in all spoken responses. Brevity is key.
 `;
 
 const tools: FunctionDeclaration[] = [
@@ -56,6 +57,15 @@ const tools: FunctionDeclaration[] = [
         }
       },
       required: ["entity_id", "service", "confirmation_message"]
+    }
+  },
+  {
+    name: 'recognize_song',
+    description: "Use this to identify a song that is currently playing. Only use this if the audio_context indicates 'Music' is detected and the user asks about the song.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+      required: []
     }
   }
 ];
@@ -194,20 +204,21 @@ export const getCloudVisionAnalysis = async (base64Image: string): Promise<{ sce
                 }
             }
         });
-
-        const jsonString = response.text.trim();
-        // A basic check to see if it's valid JSON
-        if (jsonString.startsWith('{') && jsonString.endsWith('}')) {
-             const parsed = JSON.parse(jsonString);
-             // Ensure visible_text is always an array
-             if (!parsed.visible_text) {
-                 parsed.visible_text = [];
-             }
-             return parsed;
+        
+        // Robust JSON parsing
+        try {
+            const jsonString = response.text.trim();
+            const parsed = JSON.parse(jsonString);
+            // Ensure visible_text is always an array for type safety downstream
+            if (!parsed.visible_text) {
+                parsed.visible_text = [];
+            }
+            return parsed;
+        } catch (e) {
+            console.warn("Gemini did not return valid JSON for cloud vision analysis. Response:", response.text, "Error:", e);
+            // Fallback: Use the raw text as the description if parsing fails.
+            return { scene_description: response.text || "Could not parse the visual analysis.", visible_text: [] };
         }
-        // Fallback if the model fails to return perfect JSON
-        console.warn("Gemini did not return valid JSON for cloud vision analysis. Response:", jsonString);
-        return { scene_description: jsonString, visible_text: [] };
 
     } catch (error) {
         console.error("Error getting cloud vision analysis:", error);

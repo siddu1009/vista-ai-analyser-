@@ -58,7 +58,13 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
   const objectsLogIntervalRef = useRef<number | null>(null);
   const detectedObjectsRef = useRef<{[key: string]: number}>({});
 
-  // Refs to hold latest callbacks to prevent stale closures in `onResults`
+  // Refs to hold latest callbacks to prevent stale closures in `onResults`.
+  // This is a critical pattern for stability. The `onResults` callback for the
+  // MediaPipe model is registered only once during initialization. If we used
+  // the props directly (e.g., `onClientDetection`), the callback would hold a
+  // "stale" version from the initial render. By using refs and updating them
+  // in useEffect, the single `onResults` callback can always access the
+  // latest versions of these functions and state values from the parent component.
   const onClientDetectionRef = useRef(onClientDetection);
   useEffect(() => { onClientDetectionRef.current = onClientDetection; }, [onClientDetection]);
   
@@ -77,19 +83,38 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
       return new Promise((resolve, reject) => {
         const video = videoRef.current;
         const canvas = canvasRef.current;
-        if (video && canvas && video.readyState === 4) {
+        if (video && canvas && video.readyState >= 3 && video.videoWidth > 0) {
           const context = canvas.getContext('2d');
           if (context) {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             context.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
+
+            // Check if the frame is black (camera initializing)
+            const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imageData.data;
+            let isBlack = true;
+            // Sample a grid of pixels for performance
+            const sampleStep = Math.floor(data.length / 500); // ~500 samples
+            for (let i = 0; i < data.length; i += sampleStep * 4) {
+                if (data[i] > 15 || data[i+1] > 15 || data[i+2] > 15) { // Check for non-dark pixels
+                    isBlack = false;
+                    break;
+                }
+            }
+
+            if (isBlack) {
+                reject(new Error("Captured frame is black. Camera might still be initializing."));
+                return;
+            }
+
             const dataUrl = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
             resolve(dataUrl);
           } else {
-            reject("Could not get canvas context.");
+            reject(new Error("Could not get canvas context."));
           }
         } else {
-          reject("Video not ready or canvas not available.");
+          reject(new Error("Video not ready or has no dimensions."));
         }
       });
     }
@@ -223,7 +248,7 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
       }
     };
   }, [selectedCameraId, onStreamError]);
-
+  
   // Real-time detection logging interval
   useEffect(() => {
     if (objectsLogIntervalRef.current) {
@@ -297,7 +322,7 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
   // Main detection loop
   useEffect(() => {
     const detectionLoop = async () => {
-        if (!videoRef.current || videoRef.current.readyState !== 4) {
+        if (!videoRef.current || videoRef.current.readyState < 3 || videoRef.current.videoWidth === 0) {
             animationFrameId.current = requestAnimationFrame(detectionLoop);
             return;
         }
@@ -307,9 +332,13 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
         if (!overlay) return;
         const ctx = overlay.getContext('2d');
         if (!ctx) return;
+
+        // Robustly handle canvas resizing to match video feed, preventing blinking.
+        if (overlay.width !== video.videoWidth || overlay.height !== video.videoHeight) {
+            overlay.width = video.videoWidth;
+            overlay.height = video.videoHeight;
+        }
         
-        overlay.width = video.videoWidth;
-        overlay.height = video.videoHeight;
         ctx.clearRect(0, 0, overlay.width, overlay.height);
 
         // Always process hand gestures in this mode

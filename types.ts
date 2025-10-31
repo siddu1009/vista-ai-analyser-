@@ -31,7 +31,7 @@ export enum VoiceActivationMode {
   WakeWord = 'Wake Word',
 }
 
-export type VoiceStatus = 'off' | 'ready' | 'listening' | 'waiting_command' | 'processing';
+export type VoiceStatus = 'off' | 'ready' | 'listening' | 'waiting_command' | 'processing' | 'reconnecting';
 
 export interface LogEntry {
   id: number;

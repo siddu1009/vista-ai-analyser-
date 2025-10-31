@@ -12,8 +12,8 @@ interface ControlPanelProps {
   onMicChange: (deviceId: string) => void;
   analysisMode: AnalysisMode;
   onModeChange: (mode: AnalysisMode) => void;
-  audioSensitivity: number;
-  onAudioSensitivityChange: (value: number) => void;
+  audioConfidence: number;
+  onAudioConfidenceChange: (value: number) => void;
   narrationMode: NarrationMode;
   onNarrationModeChange: (mode: NarrationMode) => void;
   interruptionMode: InterruptionMode;
@@ -31,8 +31,8 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
   onMicChange,
   analysisMode,
   onModeChange,
-  audioSensitivity,
-  onAudioSensitivityChange,
+  audioConfidence,
+  onAudioConfidenceChange,
   narrationMode,
   onNarrationModeChange,
   interruptionMode,
@@ -127,17 +127,17 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
       {/* Audio Detector */}
       <div className="space-y-3">
         <h3 className="text-md font-semibold text-vista-text-muted">Audio Detector</h3>
-        <label htmlFor="audio-sensitivity" className="flex justify-between mb-2 text-sm font-medium text-vista-text">
-            <span>Sensitivity</span>
-            <span>{audioSensitivity}</span>
+        <label htmlFor="audio-confidence" className="flex justify-between mb-2 text-sm font-medium text-vista-text">
+            <span>Minimum Confidence</span>
+            <span>{audioConfidence}%</span>
         </label>
         <input
-          id="audio-sensitivity"
+          id="audio-confidence"
           type="range"
           min="1"
           max="100"
-          value={audioSensitivity}
-          onChange={(e) => onAudioSensitivityChange(parseInt(e.target.value, 10))}
+          value={audioConfidence}
+          onChange={(e) => onAudioConfidenceChange(parseInt(e.target.value, 10))}
           className="w-full h-2 bg-vista-light-gray rounded-lg appearance-none cursor-pointer"
         />
       </div>

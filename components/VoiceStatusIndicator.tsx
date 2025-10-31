@@ -1,12 +1,32 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import MicIcon from './icons/MicIcon';
 import { VoiceStatus } from '../types';
 
 interface VoiceStatusIndicatorProps {
     status: VoiceStatus;
+    reconnectDelay?: number | null; // Delay in seconds
 }
 
-const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({ status }) => {
+const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({ status, reconnectDelay }) => {
+    const [countdown, setCountdown] = useState(reconnectDelay);
+
+    useEffect(() => {
+        setCountdown(reconnectDelay);
+        if (reconnectDelay === null || reconnectDelay <= 0) return;
+
+        const interval = setInterval(() => {
+            setCountdown(prev => {
+                if (prev && prev > 1) {
+                    return prev - 1;
+                }
+                clearInterval(interval);
+                return null;
+            });
+        }, 1000);
+
+        return () => clearInterval(interval);
+    }, [reconnectDelay]);
+
     if (status === 'off') {
         return null;
     }
@@ -32,6 +52,11 @@ const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({ status }) =
                 return {
                     text: "Processing...",
                     iconClass: "text-yellow-400"
+                };
+            case 'reconnecting':
+                return {
+                    text: `Reconnecting${countdown ? ` in ${Math.round(countdown)}s` : '...'}`,
+                    iconClass: "text-yellow-500"
                 };
             default:
                  return { text: "", iconClass: ""};
