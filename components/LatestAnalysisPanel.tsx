@@ -12,8 +12,8 @@ const LatestInsightPanel: React.FC<LatestInsightPanelProps> = ({ latestInsight, 
             <div className="flex items-center space-x-3 text-vista-accent border-b-2 border-vista-light-gray pb-2 mb-2">
                 <ChatIcon className="w-6 h-6" />
                 <div>
-                    <h2 className="text-xl font-bold">Jarvis's Latest Insight</h2>
-                    <p className="text-xs text-vista-text-muted">Synthesized from VISTA's Scene Log.</p>
+                    <h2 className="text-xl font-bold">Jarvis's Response</h2>
+                    <p className="text-xs text-vista-text-muted">The latest response from the reasoning engine.</p>
                 </div>
             </div>
             <div className="flex-grow text-sm text-vista-text min-h-[60px]">
@@ -24,7 +24,7 @@ const LatestInsightPanel: React.FC<LatestInsightPanelProps> = ({ latestInsight, 
                     </div>
                 )}
                 {!isResponding && (
-                    <p>{latestInsight || "Ask Jarvis a question to get started."}</p>
+                    <p>{latestInsight || "Ask Jarvis a question or give a command."}</p>
                 )}
             </div>
         </div>

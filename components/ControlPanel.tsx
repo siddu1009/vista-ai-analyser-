@@ -1,5 +1,5 @@
 import React from 'react';
-import { AnalysisMode, NarrationMode, InterruptionMode } from '../types';
+import { AnalysisMode, NarrationMode, InterruptionMode, VoiceActivationMode } from '../types';
 import CameraIcon from './icons/CameraIcon';
 import MicIcon from './icons/MicIcon';
 
@@ -18,6 +18,8 @@ interface ControlPanelProps {
   onNarrationModeChange: (mode: NarrationMode) => void;
   interruptionMode: InterruptionMode;
   onInterruptionModeChange: (mode: InterruptionMode) => void;
+  voiceActivationMode: VoiceActivationMode;
+  onVoiceActivationModeChange: (mode: VoiceActivationMode) => void;
 }
 
 const ControlPanel: React.FC<ControlPanelProps> = ({
@@ -34,11 +36,14 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
   narrationMode,
   onNarrationModeChange,
   interruptionMode,
-  onInterruptionModeChange
+  onInterruptionModeChange,
+  voiceActivationMode,
+  onVoiceActivationModeChange
 }) => {
   const analysisModes = Object.values(AnalysisMode);
   const narrationModes = Object.values(NarrationMode);
   const interruptionModes = Object.values(InterruptionMode);
+  const voiceActivationModes = Object.values(VoiceActivationMode);
 
   return (
     <div className="w-full flex flex-col space-y-4">
@@ -99,6 +104,22 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
                 className="w-full bg-vista-light-gray border border-vista-dark text-vista-text text-sm rounded-lg focus:ring-vista-accent focus:border-vista-accent p-2.5"
             >
                 {interruptionModes.map(mode => <option key={mode} value={mode}>{mode}</option>)}
+            </select>
+        </div>
+      </div>
+
+       {/* Voice Control */}
+      <div className="space-y-3">
+        <h3 className="text-md font-semibold text-vista-text-muted">Voice Control</h3>
+         <div>
+            <label htmlFor="voice-activation-mode" className="block mb-2 text-sm font-medium text-vista-text">Activation Mode</label>
+            <select
+                id="voice-activation-mode"
+                value={voiceActivationMode}
+                onChange={(e) => onVoiceActivationModeChange(e.target.value as VoiceActivationMode)}
+                className="w-full bg-vista-light-gray border border-vista-dark text-vista-text text-sm rounded-lg focus:ring-vista-accent focus:border-vista-accent p-2.5"
+            >
+                {voiceActivationModes.map(mode => <option key={mode} value={mode}>{mode}</option>)}
             </select>
         </div>
       </div>

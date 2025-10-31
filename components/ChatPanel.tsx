@@ -1,14 +1,44 @@
 import React, { useState, useEffect, useRef } from 'react';
 import SendIcon from './icons/SendIcon';
 import { Content } from '@google/genai';
+import { AnalysisMode } from '../types';
 
 interface ChatPanelProps {
     onSendMessage: (message: string) => void;
     isSending: boolean;
     history: Content[];
+    analysisMode: AnalysisMode;
 }
 
-const ChatPanel: React.FC<ChatPanelProps> = ({ onSendMessage, isSending, history }) => {
+const MessageContent: React.FC<{ text: string }> = ({ text }) => {
+    const regex = /(\[.*?\]\(.*?\))|(\*\*.*?\*\*)/g;
+    const parts = text.split(regex).filter(p => p); // filter out undefined/empty strings
+
+    return (
+        <p className="text-sm whitespace-pre-wrap break-words">
+            {parts.map((part, index) => {
+                const linkMatch = part.match(/\[(.*?)\]\((.*?)\)/);
+                if (linkMatch) {
+                    const [, title, url] = linkMatch;
+                    return (
+                        <a key={index} href={url} target="_blank" rel="noopener noreferrer" className="text-vista-accent hover:underline">
+                            {title}
+                        </a>
+                    );
+                }
+                
+                if (part.startsWith('**') && part.endsWith('**')) {
+                    return <strong key={index}>{part.slice(2, -2)}</strong>;
+                }
+
+                return part;
+            })}
+        </p>
+    );
+};
+
+
+const ChatPanel: React.FC<ChatPanelProps> = ({ onSendMessage, isSending, history, analysisMode }) => {
     const [message, setMessage] = useState('');
     const historyContainerRef = useRef<HTMLDivElement>(null);
 
@@ -26,6 +56,12 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onSendMessage, isSending, history
         }
     };
 
+    const placeholderText = isSending 
+        ? "Waiting for response..." 
+        : analysisMode === AnalysisMode.ContextualQnA 
+        ? "Ask about what you see..."
+        : "Ask Jarvis a question...";
+
     return (
         <div className="flex flex-col space-y-3">
              <div ref={historyContainerRef} className="flex-grow space-y-4 max-h-64 overflow-y-auto pr-2">
@@ -37,7 +73,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onSendMessage, isSending, history
                         return (
                             <div key={index} className="flex justify-end">
                                 <div className="bg-vista-accent text-white p-3 rounded-lg max-w-xs md:max-w-md">
-                                    <p className="text-sm">{textPart.text}</p>
+                                    <MessageContent text={textPart.text} />
                                 </div>
                             </div>
                         )
@@ -46,7 +82,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onSendMessage, isSending, history
                         return (
                             <div key={index} className="flex justify-start">
                                  <div className="bg-vista-light-gray text-vista-text p-3 rounded-lg max-w-xs md:max-w-md">
-                                    <p className="text-sm">{textPart.text}</p>
+                                    <MessageContent text={textPart.text} />
                                 </div>
                             </div>
                         )
@@ -59,7 +95,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onSendMessage, isSending, history
                     type="text"
                     value={message}
                     onChange={(e) => setMessage(e.target.value)}
-                    placeholder={isSending ? "Waiting for response..." : "Ask Jarvis a question..."}
+                    placeholder={placeholderText}
                     disabled={isSending}
                     className="w-full bg-vista-light-gray border border-vista-dark text-vista-text text-sm rounded-lg focus:ring-vista-accent focus:border-vista-accent p-2.5"
                     aria-label="Chat input"

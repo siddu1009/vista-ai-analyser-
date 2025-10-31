@@ -1,9 +1,9 @@
-
 import React, { useRef, useEffect, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { AnalysisMode, LogType } from '../types';
 import CameraIcon from './icons/CameraIcon';
 import PlayIcon from './icons/PlayIcon';
 import PauseIcon from './icons/PauseIcon';
+import QuestionMarkCircleIcon from './icons/QuestionMarkCircleIcon';
 
 // Declare global variables from included scripts
 declare const tf: any;
@@ -22,6 +22,7 @@ interface VideoFeedProps {
   onClientDetection: (type: LogType, message: string) => void;
   onToggleSystemActive: () => void;
   onSwitchAnalysisMode: () => void;
+  onObjectsDetected: (objects: string[]) => void;
 }
 
 export interface VideoFeedHandle {
@@ -36,6 +37,7 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
     onClientDetection,
     onToggleSystemActive,
     onSwitchAnalysisMode,
+    onObjectsDetected,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -45,6 +47,7 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
   const animationFrameId = useRef<number | null>(null);
   const [models, setModels] = useState<{ object?: any; hand?: any }>({});
   const [modelsLoading, setModelsLoading] = useState(true);
+  const [loadingMessage, setLoadingMessage] = useState('Initializing AI engine...');
 
   const handResultsRef = useRef<any>(null);
   const lastGestureRef = useRef<string | null>(null);
@@ -54,6 +57,16 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
 
   const objectsLogIntervalRef = useRef<number | null>(null);
   const detectedObjectsRef = useRef<{[key: string]: number}>({});
+
+  // Refs to hold latest callbacks to prevent stale closures in `onResults`
+  const onClientDetectionRef = useRef(onClientDetection);
+  useEffect(() => { onClientDetectionRef.current = onClientDetection; }, [onClientDetection]);
+  
+  const onToggleSystemActiveRef = useRef(onToggleSystemActive);
+  useEffect(() => { onToggleSystemActiveRef.current = onToggleSystemActive; }, [onToggleSystemActive]);
+
+  const onSwitchAnalysisModeRef = useRef(onSwitchAnalysisMode);
+  useEffect(() => { onSwitchAnalysisModeRef.current = onSwitchAnalysisMode; }, [onSwitchAnalysisMode]);
 
   useEffect(() => {
     isSystemActiveRef.current = isSystemActive;
@@ -100,20 +113,25 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
       return null;
   }, []);
 
-  // Load ML models
+  // Load ML models - This effect should only run once.
   useEffect(() => {
     const loadModels = async () => {
       try {
         setModelsLoading(true);
+        setLoadingMessage('Initializing AI engine...');
 
         // Explicitly set backend and wait for it to be ready for stability.
+        setLoadingMessage('Setting TensorFlow.js backend...');
         await tf.setBackend('webgl');
         await tf.ready();
 
+        setLoadingMessage('Loading object detection model (COCO-SSD)...');
         const objectDetector = await cocoSsd.load();
+        
+        setLoadingMessage('Loading hand gesture model (MediaPipe)...');
         const handDetector = new Hands({locateFile: (file: string) => {
           // Pin version to match the script tag in index.html for consistency.
-          return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`;
+          return `https://cdn.jsdelivr.net/npm/@medipe/hands@0.4.1675469240/${file}`;
         }});
         handDetector.setOptions({
             maxNumHands: 2,
@@ -129,7 +147,7 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
                 currentGesture = classifyHandGesture(results.multiHandLandmarks[0]);
             }
             if (currentGesture && currentGesture !== lastGestureRef.current) {
-                onClientDetection(LogType.Gesture, `Gesture detected: ${currentGesture}`);
+                onClientDetectionRef.current(LogType.Gesture, `Gesture detected: ${currentGesture}`);
             }
 
             if (currentGesture !== lastGestureRef.current) {
@@ -142,10 +160,10 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
                 if (currentGesture === 'Closed Fist' || currentGesture === 'Open Hand') {
                     gestureActionTimeoutRef.current = window.setTimeout(() => {
                         if (lastGestureRef.current === 'Closed Fist') {
-                            onToggleSystemActive();
+                            onToggleSystemActiveRef.current();
                             visualFeedbackRef.current = { message: isSystemActiveRef.current ? 'SYSTEM PAUSED' : 'SYSTEM RESUMED', expiry: Date.now() + 2000 };
                         } else if (lastGestureRef.current === 'Open Hand') {
-                            onSwitchAnalysisMode();
+                            onSwitchAnalysisModeRef.current();
                             visualFeedbackRef.current = { message: 'MODE SWITCHED', expiry: Date.now() + 2000 };
                         }
                         lastGestureRef.current = null; // Prevent re-triggering
@@ -153,18 +171,24 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
                 }
             }
         });
+
+        setLoadingMessage('Finalizing setup...');
         setModels({ object: objectDetector, hand: handDetector });
-        onClientDetection(LogType.System, "Real-time analysis models loaded successfully.");
+        onClientDetectionRef.current(LogType.System, "Hello. I am Jarvis, the reasoning layer for the VISTA system. How can I assist you?");
+
+        setTimeout(() => {
+            setModelsLoading(false);
+        }, 500);
+
       } catch (error) {
         console.error("Failed to load models:", error);
-        onClientDetection(LogType.Error, "Could not load models. This might be a network issue or a content blocker preventing access to model files.");
-      } finally {
-        setModelsLoading(false);
+        setLoadingMessage('Error loading models. Check console for details.');
+        onClientDetectionRef.current(LogType.Error, "Could not load models. This might be a network issue or a content blocker preventing access to model files.");
       }
     };
     loadModels();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onClientDetection, classifyHandGesture, onToggleSystemActive, onSwitchAnalysisMode]);
+  }, [classifyHandGesture]);
   
   // Setup and teardown camera stream
   useEffect(() => {
@@ -320,6 +344,11 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
             predictions.forEach((p: any) => {
                 currentObjects[p.class] = (currentObjects[p.class] || 0) + 1;
             });
+            
+            // Debounce reporting detected objects
+            if(JSON.stringify(Object.keys(detectedObjectsRef.current)) !== JSON.stringify(Object.keys(currentObjects))) {
+                onObjectsDetected(Object.keys(currentObjects));
+            }
             detectedObjectsRef.current = currentObjects;
         }
 
@@ -353,7 +382,7 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
     return () => {
       if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
     };
-  }, [isSystemActive, analysisMode, models, modelsLoading, classifyHandGesture, onClientDetection]);
+  }, [isSystemActive, analysisMode, models, modelsLoading, classifyHandGesture, onClientDetection, onObjectsDetected]);
 
 
   return (
@@ -371,7 +400,15 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
        {modelsLoading && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-70 text-vista-text">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-vista-accent mb-4"></div>
-          <p className="text-lg">Loading AI Models...</p>
+          <p className="text-lg font-semibold">Loading VISTA Engine</p>
+          <p className="text-sm text-vista-text-muted mt-1">{loadingMessage}</p>
+        </div>
+      )}
+      {analysisMode === AnalysisMode.ContextualQnA && !modelsLoading && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-60 text-vista-text pointer-events-none">
+            <QuestionMarkCircleIcon className="w-16 h-16 mb-4 text-vista-accent opacity-80" />
+            <h3 className="text-xl font-bold">Contextual Q&A Mode</h3>
+            <p className="text-md text-vista-text-muted">Ask Jarvis about what you see.</p>
         </div>
       )}
       <div className="absolute top-4 right-4 flex items-center space-x-2 bg-black bg-opacity-50 p-2 rounded-lg">
