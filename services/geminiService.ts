@@ -62,11 +62,6 @@ const tools: FunctionDeclaration[] = [
   {
     name: 'recognize_song',
     description: "Use this to identify a song that is currently playing. Only use this if the audio_context indicates 'Music' is detected and the user asks about the song.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {},
-      required: []
-    }
   }
 ];
 

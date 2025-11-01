@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 
 // Declare global variables from included scripts
 declare const tf: any;
@@ -31,6 +31,7 @@ const AudioClassifier: React.FC<AudioClassifierProps> = ({ isActive, micId, conf
     const classificationIntervalRef = useRef<number | null>(null);
     const isClassifyingRef = useRef<boolean>(false);
     const loadModelAttempted = useRef(false);
+    const [isModelLoaded, setIsModelLoaded] = useState(false);
 
     // Effect to load the model, polling until the YAMNet script is available.
     useEffect(() => {
@@ -51,6 +52,7 @@ const AudioClassifier: React.FC<AudioClassifierProps> = ({ isActive, micId, conf
                 try {
                     const loadedModel = await yamnet.load();
                     modelRef.current = loadedModel;
+                    setIsModelLoaded(true);
                 } catch (error) {
                     console.error("Failed to load YAMNet model:", error);
                     onError("Audio classification model failed to load. Check your network connection.");
@@ -142,7 +144,7 @@ const AudioClassifier: React.FC<AudioClassifierProps> = ({ isActive, micId, conf
         };
 
         const setupAudio = async () => {
-            if (!isActive || !micId || !modelRef.current) {
+            if (!isActive || !micId || !isModelLoaded) {
                 cleanup();
                 return;
             }
@@ -188,7 +190,7 @@ const AudioClassifier: React.FC<AudioClassifierProps> = ({ isActive, micId, conf
         setupAudio();
 
         return cleanup;
-    }, [isActive, micId, classifyAudio, onError]);
+    }, [isActive, micId, classifyAudio, onError, isModelLoaded]);
 
 
     return null; // This component does not render anything

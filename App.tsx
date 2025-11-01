@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import VideoFeed, { VideoFeedHandle } from './components/VideoFeed';
 import ControlPanel from './components/ControlPanel';
 import LogPanel from './components/LogPanel';
@@ -13,7 +13,6 @@ import { Content } from "@google/genai";
 import PlayIcon from './components/icons/PlayIcon';
 import PauseIcon from './components/icons/PauseIcon';
 import ControlsIcon from './components/icons/ControlsIcon';
-import WaveformIcon from './components/icons/WaveformIcon';
 import ChatIcon from './components/icons/ChatIcon';
 import HistoryIcon from './components/icons/HistoryIcon';
 import TrashIcon from './components/icons/TrashIcon';
@@ -27,7 +26,6 @@ const objectToEntityMap: { [key: string]: { entity_id: string; label: string; } 
     'remote': { entity_id: 'remote.living_room', label: 'Remote' },
 };
 
-
 const App: React.FC = () => {
     const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
     const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
@@ -38,7 +36,7 @@ const App: React.FC = () => {
     const [chatHistory, setChatHistory] = useState<Content[]>([]);
     const [narrationMode, setNarrationMode] = useState<NarrationMode>(NarrationMode.AlertsOnly);
     const [interruptionMode, setInterruptionMode] = useState<InterruptionMode>(InterruptionMode.Off);
-    const [voiceActivationMode, setVoiceActivationMode] = useState<VoiceActivationMode>(VoiceActivationMode.Off);
+    const [voiceActivationMode, setVoiceActivationMode] = useState<VoiceActivationMode>(VoiceActivationMode.WakeWord);
     const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('off');
     const [isSystemActive, setIsSystemActive] = useState<boolean>(false);
     const [isChatting, setIsChatting] = useState<boolean>(false);
@@ -63,528 +61,431 @@ const App: React.FC = () => {
     const lastReportedSoundRef = useRef<{ class: string | null, time: number }>({ class: null, time: 0 });
     const hadRecognitionErrorRef = useRef(false);
     const recognitionRestartTimeoutRef = useRef<number | null>(null);
-    const recognitionRetryDelayRef = useRef(5000); // Start with 5s for the first retry
-    const recognitionStabilityTimerRef = useRef<number | null>(null);
-    const MAX_RECOGNITION_RETRY_DELAY = 30000; // Max 30 seconds
+    const awakeTimeoutRef = useRef<number | null>(null);
 
-    // Refs to hold latest state for callbacks to prevent stale closures
-    const isSystemActiveRef = useRef(isSystemActive);
-    useEffect(() => { isSystemActiveRef.current = isSystemActive; }, [isSystemActive]);
-    
-    const voiceActivationModeRef = useRef(voiceActivationMode);
-    useEffect(() => { voiceActivationModeRef.current = voiceActivationMode; }, [voiceActivationMode]);
+    const addLog = useCallback((type: LogType, message: string, mode?: AnalysisMode) => {
+        const newLogEntry: LogEntry = {
+            id: Date.now() + Math.random(),
+            timestamp: new Date(),
+            type,
+            message,
+            mode,
+        };
+        setLog(prevLog => [...prevLog, newLogEntry]);
 
-    const isAwakeRef = useRef(isAwake);
-    useEffect(() => { isAwakeRef.current = isAwake; }, [isAwake]);
-    
-    const narrate = useCallback((message: string, level: 'Alert' | 'Full') => {
-        if (narrationMode === NarrationMode.Off) return;
-        if (!message) return;
-
-        if (narrationMode === NarrationMode.Full) {
-            window.speechSynthesis.cancel();
+        if (narrationMode === NarrationMode.Full || (narrationMode === NarrationMode.AlertsOnly && (type === LogType.Error || type === LogType.Interruption))) {
             const utterance = new SpeechSynthesisUtterance(message);
-            window.speechSynthesis.speak(utterance);
-        } else if (narrationMode === NarrationMode.AlertsOnly && level === 'Alert') {
-            window.speechSynthesis.cancel();
-            const utterance = new SpeechSynthesisUtterance(message);
-            window.speechSynthesis.speak(utterance);
+            speechSynthesis.speak(utterance);
         }
     }, [narrationMode]);
 
-    const addLogEntry = useCallback((type: LogType, message: string, mode?: AnalysisMode) => {
-        setLog(prevLog => [...prevLog, { id: Date.now(), timestamp: new Date(), type, message, mode }]);
-
-        switch (type) {
-            case LogType.Error:
-            case LogType.System:
-                narrate(message, 'Alert');
-                break;
-            case LogType.Analysis:
-            case LogType.Audio:
-            case LogType.Gesture:
-            case LogType.Interruption:
-                narrate(message, 'Full');
-                break;
-            default:
-                break;
-        }
-    }, [narrate]);
-    
-    const handleAudioPrediction = useCallback((prediction: AudioPrediction | null) => {
-        if (!prediction) return;
-        
-        setLatestAudioEvent(prediction);
-
-        const now = Date.now();
-        const lastSound = lastReportedSoundRef.current;
-        const isSameSound = lastSound.class === prediction.className;
-        const isWithinCooldown = (now - lastSound.time) < 10000; // 10 second cooldown
-
-        if (isSameSound && isWithinCooldown) {
-            return; // Debounce same sound
-        }
-
-        const message = `Audio event: ${prediction.className} (${Math.round(prediction.score * 100)}% confidence)`;
-        addLogEntry(LogType.Audio, message);
-        lastReportedSoundRef.current = { class: prediction.className, time: now };
-    }, [addLogEntry]);
-
-
-    useEffect(() => {
-        addLogEntry(LogType.System, "Jarvis is online. The VISTA sensory engine is ready to be activated.");
-        setChatHistory([{
-            role: 'model',
-            parts: [{ text: "Hello. I am Jarvis, the reasoning layer for the VISTA system. How can I assist you?" }]
-        }]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
+    // Get media devices
     useEffect(() => {
         const getDevices = async () => {
             try {
-                await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                await navigator.mediaDevices.getUserMedia({ audio: true, video: true }); // Request permission upfront
                 const devices = await navigator.mediaDevices.enumerateDevices();
-                const videoInputs = devices.filter(d => d.kind === 'videoinput');
-                const audioInputs = devices.filter(d => d.kind === 'audioinput');
-                setCameras(videoInputs);
-                setMicrophones(audioInputs);
-                if (videoInputs.length > 0 && !selectedCameraId) setSelectedCameraId(videoInputs[0].deviceId);
-                if (audioInputs.length > 0 && !selectedMicId) setSelectedMicId(audioInputs[0].deviceId);
+                const videoDevices = devices.filter(d => d.kind === 'videoinput');
+                const audioDevices = devices.filter(d => d.kind === 'audioinput');
+                setCameras(videoDevices);
+                setMicrophones(audioDevices);
+                if (videoDevices.length > 0 && !selectedCameraId) {
+                    setSelectedCameraId(videoDevices[0].deviceId);
+                }
+                if (audioDevices.length > 0 && !selectedMicId) {
+                    setSelectedMicId(audioDevices[0].deviceId);
+                }
             } catch (error) {
                 console.error("Error enumerating devices:", error);
-                addLogEntry(LogType.Error, "Could not access media devices. Please grant camera and microphone permissions.");
+                addLog(LogType.Error, "Could not access media devices. Please check browser permissions.");
             }
         };
         getDevices();
-    }, [addLogEntry, selectedCameraId, selectedMicId]);
+    }, [addLog, selectedCameraId, selectedMicId]);
     
-    const toggleSystemActive = useCallback(() => {
-        if (!selectedCameraId || !selectedMicId) {
-            addLogEntry(LogType.Error, "Please select both a camera and a microphone before starting.");
-            return;
+    const handleSendMessage = useCallback(async (message: string, source: 'chat' | 'voice' = 'chat') => {
+        setIsChatting(true);
+        if (source === 'chat') {
+            setChatHistory(prev => [...prev, { role: 'user', parts: [{ text: message }] }]);
         }
-        
-        setIsSystemActive(current => {
-            const newState = !current;
-            const statusMessage = `VISTA system has been ${newState ? 'activated' : 'paused'}.`;
-            addLogEntry(LogType.System, statusMessage);
-            if (!newState) {
-                window.speechSynthesis.cancel();
-            }
-            return newState;
-        });
-    }, [selectedCameraId, selectedMicId, addLogEntry]);
-    
-    const handleSwitchAnalysisMode = useCallback(() => {
-        const modes = Object.values(AnalysisMode);
-        setAnalysisMode(currentMode => {
-            const currentIndex = modes.indexOf(currentMode);
-            const nextIndex = (currentIndex + 1) % modes.length;
-            const nextMode = modes[nextIndex];
-            addLogEntry(LogType.System, `VISTA perception mode switched to: ${nextMode}`);
-            return nextMode;
-        });
-    }, [addLogEntry]);
+        addLog(LogType.System, `User prompt: "${message}"`);
 
-    const buildVistaContext = useCallback(async () => {
-        let visionAnalysis;
+        const vistaContext = {
+            scene_description: 'Not available',
+            visible_text: [],
+            entities_in_view: detectedObjects
+                .map(obj => objectToEntityMap[obj])
+                .filter(Boolean),
+            audio_context: latestAudioEvent?.className || 'Quiet',
+            is_focused: null // In a real app, this could come from eye tracking or center of screen
+        };
+
         try {
             const frame = await videoFeedRef.current?.captureFrame();
-            visionAnalysis = frame 
-                ? await getCloudVisionAnalysis(frame) 
-                : { scene_description: "Could not capture video frame.", visible_text: [] };
+            if (frame) {
+                const visionAnalysis = await getCloudVisionAnalysis(frame);
+                vistaContext.scene_description = visionAnalysis.scene_description;
+                vistaContext.visible_text = visionAnalysis.visible_text;
+            }
         } catch (error) {
             console.warn("Could not capture frame for context:", error);
-            // Provide a specific, user-friendly description for Jarvis to use.
-            visionAnalysis = { scene_description: "The camera appears to be initializing or is obscured, as the current view is black.", visible_text: [] };
         }
-
-        const entities_in_view = detectedObjects
-            .map(obj => objectToEntityMap[obj])
-            .filter(Boolean)
-            .map((deviceInfo, index) => ({
-                ...deviceInfo,
-                state: smartHomeState[deviceInfo.entity_id]?.state || 'unknown',
-                is_focused: index === 0, // Mark the first detected entity as "focused"
+        
+        const response = await askJarvis(message, vistaContext);
+        
+        if (response.answer_user) {
+            const spokenResponse = response.answer_user.spoken_response;
+            setLatestInsight(spokenResponse);
+            setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: spokenResponse }] }]);
+            addLog(LogType.System, `Jarvis response: "${spokenResponse}"`);
+            const utterance = new SpeechSynthesisUtterance(spokenResponse);
+            speechSynthesis.speak(utterance);
+        } else if (response.call_home_assistant) {
+            const { entity_id, service, confirmation_message } = response.call_home_assistant;
+            setSmartHomeState(prev => ({
+                ...prev,
+                [entity_id]: { state: service === 'turn_on' ? 'on' : 'off' }
             }));
-
-        const audio_context = latestAudioEvent
-            ? `The system is currently detecting the sound of '${latestAudioEvent.className}'.`
-            : 'The audio environment appears to be quiet.';
-
-        return {
-            scene_description: visionAnalysis.scene_description,
-            visible_text: visionAnalysis.visible_text,
-            entities_in_view,
-            audio_context,
-        };
-    }, [detectedObjects, smartHomeState, latestAudioEvent]);
-    
-    const handleAskJarvis = useCallback(async (message: string) => {
-        setIsChatting(true);
-        setLatestInsight(null);
-
-        const newUserMessage: Content = { role: 'user', parts: [{ text: message }] };
-        setChatHistory(prev => [...prev, newUserMessage]);
-
-        try {
-            addLogEntry(LogType.System, "Building VISTA context...");
-            const vistaContext = await buildVistaContext();
-            addLogEntry(LogType.System, "Context built. Querying Jarvis...");
-            
-            const result = await askJarvis(message, vistaContext);
-
-            if (result.recognize_song) {
-                addLogEntry(LogType.System, `Jarvis action: Attempting to recognize song...`);
-                // This is a mocked response as we don't have a real song recognition service.
-                const confirmation_message = "I'm listening, but my song recognition capabilities are still in development. I am unable to identify the track at this time.";
-                setLatestInsight(confirmation_message);
-                narrate(confirmation_message, 'Full');
-                const modelResponse: Content = { role: 'model', parts: [{ text: confirmation_message }] };
-                setChatHistory(prev => [...prev, modelResponse]);
-
-            } else if (result.call_home_assistant) {
-                const { entity_id, service, confirmation_message } = result.call_home_assistant;
-                addLogEntry(LogType.System, `Jarvis action: Control ${entity_id}, Service: ${service}`);
-                
-                // Simulate state change
-                setSmartHomeState(prev => ({
-                    ...prev,
-                    [entity_id]: { ...prev[entity_id], state: service.includes('on') ? 'on' : 'off' }
-                }));
-
-                setLatestInsight(confirmation_message);
-                narrate(confirmation_message, 'Alert');
-                const modelResponse: Content = { role: 'model', parts: [{ text: confirmation_message }] };
-                setChatHistory(prev => [...prev, modelResponse]);
-
-            } else if (result.answer_user) {
-                const { spoken_response } = result.answer_user;
-                setLatestInsight(spoken_response);
-                narrate(spoken_response, 'Full');
-                const modelResponse: Content = { role: 'model', parts: [{ text: spoken_response }] };
-                setChatHistory(prev => [...prev, modelResponse]);
+            setLatestInsight(confirmation_message);
+            setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: confirmation_message }] }]);
+            addLog(LogType.System, `Jarvis action: ${service} on ${entity_id}.`);
+            const utterance = new SpeechSynthesisUtterance(confirmation_message);
+            speechSynthesis.speak(utterance);
+        } else if (response.recognize_song) {
+            const song = "I'm sorry, my song recognition circuits are offline for maintenance.";
+            setLatestInsight(song);
+            setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: song }] }]);
+            addLog(LogType.System, `Jarvis action: Recognize song.`);
+            const utterance = new SpeechSynthesisUtterance(song);
+            speechSynthesis.speak(utterance);
+        }
+        
+        setIsChatting(false);
+         if (voiceStatus === 'processing') {
+             if (voiceActivationMode === VoiceActivationMode.WakeWord) {
+                setVoiceStatus('listening');
             } else {
-                 throw new Error("Invalid response from Jarvis.");
+                setVoiceStatus('ready');
             }
-
-        } catch (error) {
-            console.error(error);
-            const errorMessage = "Failed to get a response from Jarvis.";
-            const errorResponse: Content = { role: 'model', parts: [{ text: `Error: ${errorMessage}`}]};
-            setChatHistory(prev => [...prev, errorResponse]);
-            setLatestInsight(`Error: ${errorMessage}`);
-            narrate(`Error: ${errorMessage}`, 'Alert');
-        } finally {
-            setIsChatting(false);
         }
-    }, [addLogEntry, buildVistaContext, narrate]);
+    }, [addLog, detectedObjects, latestAudioEvent, voiceStatus, voiceActivationMode]);
 
-    // Effect for Cloud Vision Analysis
-    useEffect(() => {
-        const runCloudVision = async () => {
-            if (isCloudVisionRunningRef.current) return;
-            
-            try {
-                isCloudVisionRunningRef.current = true;
-                addLogEntry(LogType.System, "Capturing frame for cloud analysis...", AnalysisMode.CloudVision);
+    const processUserCommand = useCallback(async (command: string) => {
+        if (!command) return;
+        setIsAwake(false);
+        if (awakeTimeoutRef.current) clearTimeout(awakeTimeoutRef.current);
+        
+        setVoiceStatus('processing');
+        await handleSendMessage(command, 'voice');
 
-                const frame = await videoFeedRef.current?.captureFrame();
-                if (frame) {
-                    const { scene_description, visible_text } = await getCloudVisionAnalysis(frame);
-                    let fullLogMessage = scene_description;
-                    if (visible_text && visible_text.length > 0) {
-                        const textEntries = visible_text.map(vt => `"${vt.text}" (on ${vt.location})`).join(', ');
-                        fullLogMessage += `\nDetected text: ${textEntries}`;
-                    }
-                    addLogEntry(LogType.Analysis, fullLogMessage, AnalysisMode.CloudVision);
-                } else {
-                    addLogEntry(LogType.Error, "Failed to capture frame for analysis.", AnalysisMode.CloudVision);
-                }
-            } catch (error) {
-                console.error("Cloud vision analysis failed:", error);
-                addLogEntry(LogType.Error, "An error occurred during cloud analysis.", AnalysisMode.CloudVision);
-            } finally {
-                isCloudVisionRunningRef.current = false;
-            }
-        };
+    }, [handleSendMessage]);
 
-        if (isSystemActive && analysisMode === AnalysisMode.CloudVision) {
-            runCloudVision(); 
-            cloudVisionIntervalRef.current = window.setInterval(runCloudVision, 10000);
-        }
-
-        return () => {
-            if (cloudVisionIntervalRef.current) {
-                clearInterval(cloudVisionIntervalRef.current);
-                cloudVisionIntervalRef.current = null;
-            }
-        };
-    }, [isSystemActive, analysisMode, addLogEntry]);
-
-    // Effect for Proactive Jarvis Interruptions
-    useEffect(() => {
-        const runInterruption = async () => {
-            if (isChatting || interruptionMode === InterruptionMode.Off) {
-                return;
-            }
-            const vistaContext = await buildVistaContext();
-            const insight = await getJarvisInterruption(vistaContext, interruptionMode);
-            if (insight && !insight.includes('[NO_EVENT]')) {
-                addLogEntry(LogType.Interruption, insight);
-            }
-        };
-
-        if (isSystemActive && interruptionMode !== InterruptionMode.Off) {
-            interruptionIntervalRef.current = window.setInterval(runInterruption, 15000);
-        }
-
-        return () => {
-            if (interruptionIntervalRef.current) {
-                clearInterval(interruptionIntervalRef.current);
-                interruptionIntervalRef.current = null;
-            }
-        };
-    }, [isSystemActive, interruptionMode, addLogEntry, isChatting, buildVistaContext]);
-    
-    // Create refs for callbacks to stabilize speech recognition effect
-    const addLogEntryRef = useRef(addLogEntry);
-    useEffect(() => { addLogEntryRef.current = addLogEntry; }, [addLogEntry]);
-    const handleAskJarvisRef = useRef(handleAskJarvis);
-    useEffect(() => { handleAskJarvisRef.current = handleAskJarvis; }, [handleAskJarvis]);
-    const narrateRef = useRef(narrate);
-    useEffect(() => { narrateRef.current = narrate; }, [narrate]);
-    
-    // Re-architected Speech Recognition for maximum stability.
-    // Effect 1: Initialize the recognition engine once.
+    // Speech Recognition Lifecycle
     useEffect(() => {
         const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
         if (!SpeechRecognition) {
-            addLogEntryRef.current(LogType.Error, "Speech recognition is not supported by your browser.");
+            // Only log error if user tries to use a voice feature.
+            if(voiceActivationMode !== VoiceActivationMode.Off || (isSystemActive && voiceActivationMode === VoiceActivationMode.Off)) {
+                addLog(LogType.Error, "Speech recognition is not supported in this browser.");
+            }
             return;
         }
 
+        // The recognition engine should be running whenever the system is active, to allow for manual listening.
+        if (!isSystemActive) {
+             if (speechRecognitionRef.current) {
+                speechRecognitionRef.current.stop();
+                speechRecognitionRef.current = null;
+            }
+            setVoiceStatus('off');
+            return;
+        }
+
+        if (speechRecognitionRef.current) return; // Already running
+
         const recognition = new SpeechRecognition();
+        speechRecognitionRef.current = recognition;
         recognition.continuous = true;
         recognition.interimResults = true;
-        recognition.lang = 'en-US';
-        speechRecognitionRef.current = recognition;
-
-        const startListening = () => {
-            if (voiceActivationModeRef.current === VoiceActivationMode.WakeWord && isSystemActiveRef.current) {
-                try {
-                    recognition.start();
-                } catch(e) {
-                    // This can happen if it's already started, which is fine.
-                    console.warn("Speech recognition already started.", e);
-                }
-            }
-        };
 
         recognition.onstart = () => {
-            if (hadRecognitionErrorRef.current) {
-                if (recognitionStabilityTimerRef.current) clearTimeout(recognitionStabilityTimerRef.current);
-                recognitionStabilityTimerRef.current = window.setTimeout(() => {
-                    addLogEntryRef.current(LogType.System, "Speech recognition connection is stable.");
-                    hadRecognitionErrorRef.current = false;
-                    recognitionRetryDelayRef.current = 5000;
-                    recognitionStabilityTimerRef.current = null;
-                }, 15000);
+            if (voiceActivationMode === VoiceActivationMode.WakeWord) {
+                setVoiceStatus(isAwake ? 'waiting_command' : 'listening');
+            } else { // Mode is 'Off', so we are ready for manual activation
+                setVoiceStatus(isAwake ? 'waiting_command' : 'ready');
             }
             setReconnectDelay(null);
-            setVoiceStatus(isAwakeRef.current ? 'waiting_command' : 'listening');
-        };
-
-        recognition.onerror = (event: any) => {
-            if (event.error !== 'no-speech' && event.error !== 'aborted') {
-                 if (!hadRecognitionErrorRef.current) {
-                    console.error('Speech recognition error:', event.error);
-                    addLogEntryRef.current(LogType.Error, `Speech recognition error: "${event.error}". Attempting to reconnect...`);
-                 }
-                 setVoiceStatus('reconnecting');
-                 hadRecognitionErrorRef.current = true;
-            }
-        };
-        
-        recognition.onend = () => {
-            if (recognitionRestartTimeoutRef.current) clearTimeout(recognitionRestartTimeoutRef.current);
-            if (recognitionStabilityTimerRef.current) {
-                clearTimeout(recognitionStabilityTimerRef.current);
-                recognitionStabilityTimerRef.current = null;
-            }
-
-            if (voiceActivationModeRef.current === VoiceActivationMode.WakeWord && isSystemActiveRef.current) {
-                if (hadRecognitionErrorRef.current) {
-                    const currentDelay = recognitionRetryDelayRef.current;
-                    setReconnectDelay(Math.round(currentDelay / 1000));
-                    recognitionRestartTimeoutRef.current = window.setTimeout(startListening, currentDelay);
-                    recognitionRetryDelayRef.current = Math.min(currentDelay * 2, MAX_RECOGNITION_RETRY_DELAY);
-                } else {
-                    recognitionRestartTimeoutRef.current = window.setTimeout(startListening, 100);
-                }
-            } else {
-                setVoiceStatus(voiceActivationModeRef.current === VoiceActivationMode.Off ? 'off' : 'ready');
-                setReconnectDelay(null);
-            }
+            hadRecognitionErrorRef.current = false;
         };
 
         recognition.onresult = (event: any) => {
-            const transcript = Array.from(event.results)
-                .map((result: any) => result[0])
-                .map((result) => result.transcript)
-                .join('');
+            let finalTranscript = '';
+            let interimTranscript = '';
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += event.results[i][0].transcript;
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
+                }
+            }
+            const transcript = (finalTranscript || interimTranscript).toLowerCase().trim();
+            const WAKE_WORD_REGEX = /\bjarvis\b/;
             
-            const isFinal = event.results[event.results.length - 1].isFinal;
+            if (awakeTimeoutRef.current) clearTimeout(awakeTimeoutRef.current);
 
-            if (isAwakeRef.current) {
-                if (isFinal && transcript.trim()) {
-                    setVoiceStatus('processing');
-                    setIsAwake(false); // Reset for next time
-                    handleAskJarvisRef.current(transcript.trim());
+            const isWakeWordMode = voiceActivationMode === VoiceActivationMode.WakeWord;
+
+            if (isWakeWordMode && !isAwake && WAKE_WORD_REGEX.test(transcript)) {
+                setIsAwake(true);
+                setVoiceStatus('waiting_command');
+                const command = transcript.split(WAKE_WORD_REGEX)[1]?.trim();
+                if (command) {
+                    processUserCommand(command);
+                } else {
+                   awakeTimeoutRef.current = window.setTimeout(() => {
+                        setIsAwake(false);
+                        setVoiceStatus('listening');
+                   }, 5000); // 5-second window to give a command
                 }
-            } else if (transcript.toLowerCase().includes('jarvis')) {
-                 if (isFinal) {
-                    setIsAwake(true);
-                    narrateRef.current("Yes?", 'Alert');
-                }
+            } else if (isAwake && finalTranscript) {
+                processUserCommand(finalTranscript);
             }
         };
-        
-        // Cleanup on component unmount
-        return () => {
-            if (recognitionRestartTimeoutRef.current) clearTimeout(recognitionRestartTimeoutRef.current);
-            if (recognitionStabilityTimerRef.current) clearTimeout(recognitionStabilityTimerRef.current);
-            if (recognition) {
-                recognition.onresult = null;
-                recognition.onend = null;
-                recognition.onstart = null;
-                recognition.onerror = null;
-                recognition.stop();
+
+        recognition.onerror = (event: any) => {
+            console.error("Speech recognition error", event.error);
+            if (event.error !== 'no-speech' && event.error !== 'aborted' && event.error !== 'network') {
+               addLog(LogType.Error, `Speech recognition error: ${event.error}`);
+            }
+            if (event.error !== 'no-speech' && event.error !== 'aborted') {
+                hadRecognitionErrorRef.current = true;
             }
         };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
 
-    // Effect 2: Control the recognition engine based on state changes.
-    useEffect(() => {
-        const recognition = speechRecognitionRef.current;
-        if (!recognition) return;
-
-        if (isSystemActive && voiceActivationMode === VoiceActivationMode.WakeWord) {
-            setVoiceStatus('ready');
-            try {
-                recognition.start();
-            } catch(e) {
-                console.warn("Could not start speech recognition, it may have been already started.");
+        recognition.onend = () => {
+            // Only restart if the service should be active.
+            if (isSystemActive) {
+                if(recognitionRestartTimeoutRef.current) clearTimeout(recognitionRestartTimeoutRef.current);
+                recognitionRestartTimeoutRef.current = window.setTimeout(() => {
+                     try {
+                        speechRecognitionRef.current?.start();
+                    } catch(e) {
+                        // This can happen if start() is called while it's already starting. Ignore.
+                    }
+                }, 250);
+            } else {
+                setVoiceStatus('off');
             }
-        } else {
-            setVoiceStatus('off');
-            setIsAwake(false);
-            recognition.stop();
+        };
+
+        try {
+            recognition.start();
+        } catch(e) {
+            // Already started, ignore
         }
-    }, [isSystemActive, voiceActivationMode]);
 
+
+        return () => {
+            if (recognition) {
+                recognition.onstart = null;
+                recognition.onresult = null;
+                recognition.onerror = null;
+                recognition.onend = null;
+                recognition.stop();
+                speechRecognitionRef.current = null;
+            }
+            if(recognitionRestartTimeoutRef.current) clearTimeout(recognitionRestartTimeoutRef.current);
+            if(awakeTimeoutRef.current) clearTimeout(awakeTimeoutRef.current);
+        };
+    }, [voiceActivationMode, isSystemActive, addLog, isAwake, processUserCommand]);
+
+    // Cloud Vision Interval
+    useEffect(() => {
+        if (cloudVisionIntervalRef.current) clearInterval(cloudVisionIntervalRef.current);
+        if (isSystemActive && analysisMode === AnalysisMode.CloudVision) {
+            cloudVisionIntervalRef.current = window.setInterval(async () => {
+                if (isCloudVisionRunningRef.current) return;
+                isCloudVisionRunningRef.current = true;
+                try {
+                    const frame = await videoFeedRef.current?.captureFrame();
+                    if (frame) {
+                        const { scene_description } = await getCloudVisionAnalysis(frame);
+                        addLog(LogType.Analysis, scene_description, AnalysisMode.CloudVision);
+                    }
+                } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+                    if (!errorMessage.includes("frame is black")) {
+                        addLog(LogType.Error, `Cloud Vision analysis failed: ${errorMessage}`);
+                    }
+                } finally {
+                    isCloudVisionRunningRef.current = false;
+                }
+            }, 10000);
+        }
+        return () => {
+            if (cloudVisionIntervalRef.current) clearInterval(cloudVisionIntervalRef.current);
+        };
+    }, [isSystemActive, analysisMode, addLog]);
+    
+    // Jarvis Interruption Interval
+    useEffect(() => {
+        if (interruptionIntervalRef.current) clearInterval(interruptionIntervalRef.current);
+        if (isSystemActive && interruptionMode !== InterruptionMode.Off) {
+             interruptionIntervalRef.current = window.setInterval(async () => {
+                const vistaContext = {
+                    scene_description: 'Not available',
+                    entities_in_view: detectedObjects.map(obj => objectToEntityMap[obj]).filter(Boolean),
+                    audio_context: latestAudioEvent?.className || 'Quiet',
+                };
+                const interruption = await getJarvisInterruption(vistaContext, interruptionMode);
+                if (interruption && !interruption.includes("[NO_EVENT]")) {
+                    addLog(LogType.Interruption, interruption);
+                }
+             }, 15000);
+        }
+        return () => {
+             if (interruptionIntervalRef.current) clearInterval(interruptionIntervalRef.current);
+        };
+    }, [isSystemActive, interruptionMode, addLog, detectedObjects, latestAudioEvent]);
+    
+    const handleManualListen = useCallback(() => {
+        if (isSystemActive && !isAwake && voiceActivationMode === VoiceActivationMode.Off) {
+            addLog(LogType.System, "Manual voice activation triggered.");
+            setIsAwake(true);
+            setVoiceStatus('waiting_command');
+            
+            if (awakeTimeoutRef.current) clearTimeout(awakeTimeoutRef.current);
+            awakeTimeoutRef.current = window.setTimeout(() => {
+                setIsAwake(false);
+                setVoiceStatus(currentStatus => {
+                    // Only reset if we are still waiting, not if we're already processing
+                    if (currentStatus === 'waiting_command') {
+                        return 'ready';
+                    }
+                    return currentStatus;
+                });
+            }, 7000); // 7-second window for manual command
+        }
+    }, [isSystemActive, isAwake, voiceActivationMode, addLog]);
+
+    const handleAudioPrediction = useCallback((prediction: AudioPrediction | null) => {
+        if (!prediction) return;
+        setLatestAudioEvent(prediction);
+        const now = Date.now();
+        if (prediction.className !== lastReportedSoundRef.current.class || now - lastReportedSoundRef.current.time > 5000) {
+            addLog(LogType.Audio, `Sound detected: ${prediction.className} (${Math.round(prediction.score * 100)}% confidence)`);
+            lastReportedSoundRef.current = { class: prediction.className, time: now };
+        }
+    }, [addLog]);
+
+    const handleToggleSystemActive = useCallback(() => {
+        setIsSystemActive(prev => {
+            addLog(LogType.System, `System ${!prev ? 'resumed' : 'paused'}.`);
+            return !prev;
+        });
+    }, [addLog]);
+
+    const handleSwitchAnalysisMode = useCallback(() => {
+        const modes = Object.values(AnalysisMode);
+        const currentIndex = modes.indexOf(analysisMode);
+        const nextIndex = (currentIndex + 1) % modes.length;
+        const newMode = modes[nextIndex];
+        setAnalysisMode(newMode);
+        addLog(LogType.System, `Switched to ${newMode} mode.`);
+    }, [analysisMode, addLog]);
+    
+    const latestAudioLog = useMemo(() => log.slice().reverse().find(l => l.type === LogType.Audio), [log]);
 
     return (
-        <div className="min-h-screen bg-vista-dark flex flex-col p-4 font-sans text-vista-text">
-             <AudioClassifier 
-                isActive={isSystemActive && !!selectedMicId}
-                micId={selectedMicId}
-                confidenceThreshold={audioConfidence / 100}
-                onPrediction={handleAudioPrediction}
-                onError={(msg) => addLogEntry(LogType.Error, msg)}
-            />
-            <header className="flex items-center justify-between mb-4 flex-shrink-0">
+        <div className="bg-vista-dark min-h-screen font-sans">
+            <header className="bg-vista-gray/80 backdrop-blur-sm p-3 shadow-lg flex justify-between items-center sticky top-0 z-10">
                 <div className="flex items-center space-x-3">
-                    <h1 className="text-3xl font-bold">VISTA</h1>
-                    <span className="text-sm font-mono bg-vista-accent text-white px-2 py-0.5 rounded">v2.1</span>
+                    <img src="/vite.svg" alt="VISTA Logo" className="w-8 h-8" />
+                    <h1 className="text-xl font-bold text-vista-text hidden sm:block">VISTA</h1>
+                </div>
+                 <div className="absolute left-1/2 -translate-x-1/2">
+                    <VoiceStatusIndicator status={voiceStatus} reconnectDelay={reconnectDelay} />
                 </div>
                 <div className="flex items-center space-x-4">
-                    <VoiceStatusIndicator status={voiceStatus} reconnectDelay={reconnectDelay} />
-                    <button
-                        onClick={toggleSystemActive}
-                        className={`px-4 py-2 rounded-lg flex items-center space-x-2 font-semibold transition-colors ${isSystemActive ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} text-white`}
-                        aria-label={isSystemActive ? "Pause System" : "Activate System"}
-                    >
+                    <button onClick={() => setLog([])} className="text-vista-text-muted hover:text-vista-accent transition-colors" aria-label="Clear logs">
+                        <TrashIcon className="w-6 h-6" />
+                    </button>
+                    <button onClick={handleToggleSystemActive} className="w-24 text-center px-4 py-2 bg-vista-light-gray rounded-lg flex items-center justify-center space-x-2 hover:bg-opacity-80 transition-colors">
                         {isSystemActive ? <PauseIcon className="w-5 h-5" /> : <PlayIcon className="w-5 h-5" />}
-                        <span>{isSystemActive ? 'Pause System' : 'Activate System'}</span>
+                        <span>{isSystemActive ? 'Pause' : 'Start'}</span>
                     </button>
                 </div>
             </header>
 
-            <main className="flex-grow grid grid-cols-1 lg:grid-cols-3 gap-4 overflow-hidden">
-                {/* Left Column: Main View */}
-                <div className="lg:col-span-2 flex flex-col gap-4 min-h-0">
-                    <div className="aspect-video flex-shrink-0">
-                        <VideoFeed
-                            ref={videoFeedRef}
-                            selectedCameraId={selectedCameraId}
-                            isSystemActive={isSystemActive}
-                            onStreamError={(msg) => addLogEntry(LogType.Error, msg)}
-                            analysisMode={analysisMode}
-                            onClientDetection={addLogEntry}
-                            onToggleSystemActive={toggleSystemActive}
-                            onSwitchAnalysisMode={handleSwitchAnalysisMode}
-                            onObjectsDetected={setDetectedObjects}
-                        />
+            <main className="p-4">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                    {/* Main Content Column */}
+                    <div className="lg:col-span-2 flex flex-col space-y-4">
+                        <div className="aspect-video">
+                           <VideoFeed
+                                ref={videoFeedRef}
+                                selectedCameraId={selectedCameraId}
+                                isSystemActive={isSystemActive}
+                                onStreamError={(msg) => addLog(LogType.Error, msg)}
+                                analysisMode={analysisMode}
+                                onClientDetection={(type, msg) => addLog(type, msg, analysisMode)}
+                                onToggleSystemActive={handleToggleSystemActive}
+                                onSwitchAnalysisMode={handleSwitchAnalysisMode}
+                                onObjectsDetected={setDetectedObjects}
+                            />
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                           <LatestInsightPanel latestInsight={latestInsight} isResponding={isChatting} />
+                           <AudioEventDetectorPanel isAudioActive={isSystemActive} latestAudioEvent={latestAudioLog} />
+                        </div>
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-shrink-0">
-                         <LatestInsightPanel latestInsight={latestInsight} isResponding={isChatting} />
-                         <AudioEventDetectorPanel 
-                            isAudioActive={isSystemActive && !!selectedMicId}
-                            latestAudioEvent={log.filter(l => l.type === LogType.Audio).pop()}
-                         />
-                    </div>
-                </div>
 
-                {/* Right Column: Controls and Logs */}
-                <div className="lg:col-span-1 flex flex-col gap-4 overflow-y-auto pr-2">
-                     <AccordionPanel title="Controls" icon={<ControlsIcon className="w-6 h-6" />} defaultOpen={true}>
-                        <ControlPanel
-                            cameras={cameras}
-                            microphones={microphones}
-                            selectedCameraId={selectedCameraId}
-                            selectedMicId={selectedMicId}
-                            onCameraChange={setSelectedCameraId}
-                            onMicChange={setSelectedMicId}
-                            analysisMode={analysisMode}
-                            onModeChange={setAnalysisMode}
-                            audioConfidence={audioConfidence}
-                            onAudioConfidenceChange={setAudioConfidence}
-                            narrationMode={narrationMode}
-                            onNarrationModeChange={setNarrationMode}
-                            interruptionMode={interruptionMode}
-                            onInterruptionModeChange={setInterruptionMode}
-                            voiceActivationMode={voiceActivationMode}
-                            onVoiceActivationModeChange={setVoiceActivationMode}
-                        />
-                    </AccordionPanel>
-                     <AccordionPanel title="Jarvis Chat" icon={<ChatIcon className="w-6 h-6" />} defaultOpen={true}>
-                        <ChatPanel 
-                            onSendMessage={handleAskJarvis}
-                            isSending={isChatting}
-                            history={chatHistory}
-                            analysisMode={analysisMode}
-                        />
-                    </AccordionPanel>
-                    <AccordionPanel title="System Log" icon={<HistoryIcon className="w-6 h-6" />}>
-                         <div className="flex flex-col space-y-3">
-                             <button 
-                                onClick={() => {
-                                    setLog([]);
-                                    addLogEntry(LogType.System, "Log cleared.");
-                                }}
-                                className="self-end flex items-center space-x-1 text-xs text-vista-text-muted hover:text-vista-accent"
-                             >
-                                 <TrashIcon className="w-3 h-3"/>
-                                 <span>Clear Log</span>
-                             </button>
-                            <LogPanel logs={log} />
-                         </div>
-                    </AccordionPanel>
+                    {/* Sidebar Column */}
+                    <div className="lg:col-span-1 flex flex-col space-y-4">
+                       <AccordionPanel title="Controls" icon={<ControlsIcon className="w-6 h-6" />} defaultOpen={true}>
+                           <ControlPanel 
+                                cameras={cameras}
+                                microphones={microphones}
+                                selectedCameraId={selectedCameraId}
+                                selectedMicId={selectedMicId}
+                                onCameraChange={setSelectedCameraId}
+                                onMicChange={setSelectedMicId}
+                                analysisMode={analysisMode}
+                                onModeChange={setAnalysisMode}
+                                audioConfidence={audioConfidence}
+                                onAudioConfidenceChange={setAudioConfidence}
+                                narrationMode={narrationMode}
+                                onNarrationModeChange={setNarrationMode}
+                                interruptionMode={interruptionMode}
+                                onInterruptionModeChange={setInterruptionMode}
+                                voiceActivationMode={voiceActivationMode}
+                                onVoiceActivationModeChange={setVoiceActivationMode}
+                           />
+                       </AccordionPanel>
+                       <AccordionPanel title="Chat with Jarvis" icon={<ChatIcon className="w-6 h-6" />} defaultOpen={true}>
+                           <ChatPanel
+                                onSendMessage={handleSendMessage}
+                                isSending={isChatting}
+                                history={chatHistory}
+                                analysisMode={analysisMode}
+                                voiceActivationMode={voiceActivationMode}
+                                onManualListen={handleManualListen}
+                           />
+                       </AccordionPanel>
+                       <AccordionPanel title="Event Log" icon={<HistoryIcon className="w-6 h-6" />}>
+                           <LogPanel logs={log} />
+                       </AccordionPanel>
+                    </div>
                 </div>
             </main>
+            
+            <AudioClassifier 
+                isActive={isSystemActive}
+                micId={selectedMicId}
+                confidenceThreshold={audioConfidence / 100}
+                onPrediction={handleAudioPrediction}
+                onError={(msg) => addLog(LogType.Error, msg)}
+            />
         </div>
     );
 };

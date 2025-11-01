@@ -156,7 +156,7 @@ const VideoFeed = forwardRef<VideoFeedHandle, VideoFeedProps>(({
         setLoadingMessage('Loading hand gesture model (MediaPipe)...');
         const handDetector = new Hands({locateFile: (file: string) => {
           // Pin version to match the script tag in index.html for consistency.
-          return `https://cdn.jsdelivr.net/npm/@medipe/hands@0.4.1675469240/${file}`;
+          return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`;
         }});
         handDetector.setOptions({
             maxNumHands: 2,

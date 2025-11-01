@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import SendIcon from './icons/SendIcon';
+import MicIcon from './icons/MicIcon';
 import { Content } from '@google/genai';
-import { AnalysisMode } from '../types';
+import { AnalysisMode, VoiceActivationMode } from '../types';
 
 interface ChatPanelProps {
     onSendMessage: (message: string) => void;
     isSending: boolean;
     history: Content[];
     analysisMode: AnalysisMode;
+    voiceActivationMode: VoiceActivationMode;
+    onManualListen: () => void;
 }
 
 const MessageContent: React.FC<{ text: string }> = ({ text }) => {
@@ -38,7 +41,7 @@ const MessageContent: React.FC<{ text: string }> = ({ text }) => {
 };
 
 
-const ChatPanel: React.FC<ChatPanelProps> = ({ onSendMessage, isSending, history, analysisMode }) => {
+const ChatPanel: React.FC<ChatPanelProps> = ({ onSendMessage, isSending, history, analysisMode, voiceActivationMode, onManualListen }) => {
     const [message, setMessage] = useState('');
     const historyContainerRef = useRef<HTMLDivElement>(null);
 
@@ -100,6 +103,17 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onSendMessage, isSending, history
                     className="w-full bg-vista-light-gray border border-vista-dark text-vista-text text-sm rounded-lg focus:ring-vista-accent focus:border-vista-accent p-2.5"
                     aria-label="Chat input"
                 />
+                {voiceActivationMode === VoiceActivationMode.Off && (
+                    <button
+                        type="button"
+                        onClick={onManualListen}
+                        disabled={isSending}
+                        className="p-2.5 bg-vista-light-gray text-vista-text rounded-lg hover:bg-opacity-90 disabled:bg-vista-dark disabled:cursor-not-allowed transition-colors"
+                        aria-label="Activate voice command"
+                    >
+                       <MicIcon className="w-5 h-5" />
+                    </button>
+                )}
                 <button
                     type="submit"
                     disabled={isSending || !message.trim()}
