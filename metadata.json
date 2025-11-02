@@ -1,0 +1,8 @@
+{
+  "name": "VISTA - Vision Intelligence Scene Translator & Analyzer",
+  "description": "A sophisticated, real-time monitoring application that uses a device's camera and microphone to provide AI-powered analysis of the user's environment, featuring a witty AI assistant named Jarvis.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
